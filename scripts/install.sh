@@ -556,7 +556,9 @@ sync_repo_extras
 step "Setting up MCP Router"
 setup_mcp_router
 
-printf '\nClaude Unbound is installed. Start the proxy with: fcc-server\n'
+printf '\nClaude Unbound is installed. We recommend using the fcc-launcher.sh script within the scripts folder for launching everything simultaneously via a kitty terminal window.\n'
+printf 'Alternatively, you can run everything seperately (except the MCP Router) with the following commands:\n'
+printf 'Start the proxy with: fcc-server\n'
 printf 'Run Claude Code with: fcc-claude\n'
 printf 'Run Codex with: fcc-codex\n'
 
