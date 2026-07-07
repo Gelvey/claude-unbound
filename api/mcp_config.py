@@ -30,16 +30,21 @@ class McpBackend(BaseModel):
     """One entry from the `servers` map in mcp_config.json."""
 
     name: str = Field(description="Backend name (valid identifier)")
-    type: Literal["stdio", "sse"] = Field(description="Backend transport type")
-    port: int = Field(ge=1, le=65535, description="Local port for supergateway")
+    type: Literal["stdio", "sse", "http"] = Field(description="Backend transport type")
+    port: int = Field(
+        ge=1, le=65535, description="Local port (used by stdio supergateway)"
+    )
 
     # stdio fields
     command: str | None = None
     args: list[str] = Field(default_factory=list)
     env: dict[str, str] = Field(default_factory=dict)
 
-    # sse field
+    # sse / http fields
     url: str | None = None
+    headers: dict[str, str] = Field(
+        default_factory=dict, description="HTTP headers for http backends"
+    )
 
     @model_validator(mode="after")
     def _validate_type_fields(self) -> McpBackend:
@@ -47,6 +52,8 @@ class McpBackend(BaseModel):
             raise ValueError("stdio backend requires 'command'")
         if self.type == "sse" and not self.url:
             raise ValueError("sse backend requires 'url'")
+        if self.type == "http" and not self.url:
+            raise ValueError("http backend requires 'url'")
         return self
 
 
@@ -112,6 +119,24 @@ def _unmask_env(
     return result
 
 
+def _mask_headers(headers: dict[str, str]) -> dict[str, str]:
+    """Mask non-empty header values (secrets)."""
+    return {k: (MASKED_SECRET if v else "") for k, v in headers.items()}
+
+
+def _unmask_headers(
+    masked_headers: dict[str, str], original_headers: dict[str, str]
+) -> dict[str, str]:
+    """Resolve masked header values: MASKED_SECRET means 'leave unchanged'."""
+    result = {}
+    for key, value in masked_headers.items():
+        if value == MASKED_SECRET:
+            result[key] = original_headers.get(key, "")
+        else:
+            result[key] = value
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Load / validate / write
 # ---------------------------------------------------------------------------
@@ -160,14 +185,16 @@ def validate_mcp_config(servers: dict[str, dict[str, Any]]) -> list[str]:
         names_seen.add(name)
 
         srv_type = srv_data.get("type")
-        if srv_type not in ("stdio", "sse"):
-            errors.append(f"server '{name}': type must be 'stdio' or 'sse'")
+        if srv_type not in ("stdio", "sse", "http"):
+            errors.append(f"server '{name}': type must be 'stdio', 'sse', or 'http'")
             continue
 
         if srv_type == "stdio" and not srv_data.get("command"):
             errors.append(f"server '{name}': stdio backend requires 'command'")
         if srv_type == "sse" and not srv_data.get("url"):
             errors.append(f"server '{name}': sse backend requires 'url'")
+        if srv_type == "http" and not srv_data.get("url"):
+            errors.append(f"server '{name}': http backend requires 'url'")
 
         port = srv_data.get("port")
         if not isinstance(port, int) or port < 1 or port > 65535:

@@ -1,5 +1,5 @@
 {
-  "_comment": "MCP backend registry. Canonical location: ~/.fcc/mcp_config.json. Edit via the Admin UI → MCP Router view (recommended) or by hand. Copy this file to ~/.fcc/mcp_config.json and fill in real secrets. The launcher creates this automatically on first run. Each stdio MCP server is exposed by supergateway on http://127.0.0.1:<port>/sse. The meta-router reads this to know which backends exist and what command to spawn.",
+  "_comment": "MCP backend registry. Canonical location: ~/.fcc/mcp_config.json. Edit via the Admin UI → MCP Router view (recommended) or by hand. Copy this file to ~/.fcc/mcp_config.json and fill in real secrets. The launcher creates this automatically on first run. Each stdio MCP server is exposed by supergateway on http://127.0.0.1:<port>/sse. The meta-router reads this to know which backends exist and what command to spawn. Supported types: stdio, sse, http (Streamable HTTP).",
   "router_socket": "~/.mcp-router/sockets/router.sock",
   "router_pidfile": "~/.mcp-router/run/router.pid",
   "router_log": "~/.mcp-router/logs/router.log",
@@ -13,6 +13,14 @@
         "STRIPE_SECRET_KEY": "sk_live_REPLACE_ME"
       },
       "port": 7101
+    },
+    "composio": {
+      "type": "http",
+      "url": "https://connect.composio.dev/mcp",
+      "headers": {
+        "x-consumer-api-key": "YOUR_COMPOSIO_API_KEY"
+      },
+      "port": 7110
     }
   }
 }

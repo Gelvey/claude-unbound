@@ -140,6 +140,12 @@ for name in "${SERVER_NAMES[@]}"; do
         continue
     fi
 
+    if [ "$type" = "http" ]; then
+        echo "[mcp] $name: type=http, will connect directly to $(jq -r ".servers[\"$name\"].url" "$CONFIG")"
+        # No supergateway needed for HTTP Streamable backends.
+        continue
+    fi
+
     cmd=$(jq -r ".servers[\"$name\"].command" "$CONFIG")
     # Portable read of JSON arrays (bash 3.2+ / zsh compatible).
     ARGS=()
@@ -193,7 +199,7 @@ echo "[mcp] waiting up to ${HEALTH_TIMEOUT_S}s for supergateways to be healthy..
 fails=()
 for name in "${SERVER_NAMES[@]}"; do
     type=$(jq -r ".servers[\"$name\"].type" "$CONFIG")
-    if [ "$type" = "sse" ]; then continue; fi
+    if [ "$type" = "sse" ] || [ "$type" = "http" ]; then continue; fi
     port=$(jq -r ".servers[\"$name\"].port" "$CONFIG")
     if ! wait_for_health "$name" "$port"; then
         fails+=("$name:$port")
@@ -204,7 +210,7 @@ if [ ${#fails[@]} -ne 0 ]; then
     echo "[mcp] check logs: $LOG_DIR/<name>.log" >&2
     for name in "${SERVER_NAMES[@]}"; do
         type=$(jq -r ".servers[\"$name\"].type" "$CONFIG")
-        if [ "$type" = "sse" ]; then continue; fi
+        if [ "$type" = "sse" ] || [ "$type" = "http" ]; then continue; fi
         echo "[mcp]   --- $name log tail ---" >&2
         tail -n 20 "$LOG_DIR/${name}.log" >&2 || true
     done

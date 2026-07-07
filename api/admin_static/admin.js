@@ -678,17 +678,15 @@ function renderMcpView(config, status) {
     heading.className = "section-heading";
     heading.innerHTML = `<div><h3>${label}</h3><p>${description}</p></div>`;
 
-    if (!isShared) {
-      const topAddBtn = document.createElement("button");
-      topAddBtn.type = "button";
-      topAddBtn.className = "primary-button";
-      topAddBtn.textContent = "+ Add Backend";
-      topAddBtn.addEventListener("click", () => {
-        mcpState.editingIndex = null;
-        showMcpEditForm(null, null);
-      });
-      heading.appendChild(topAddBtn);
-    }
+    const topAddBtn = document.createElement("button");
+    topAddBtn.type = "button";
+    topAddBtn.className = "primary-button";
+    topAddBtn.textContent = "+ Add Backend";
+    topAddBtn.addEventListener("click", () => {
+      mcpState.editingIndex = null;
+      showMcpEditForm(null, null, isShared);
+    });
+    heading.appendChild(topAddBtn);
     section.appendChild(heading);
 
     const grid = document.createElement("div");
@@ -724,42 +722,45 @@ function renderMcpView(config, status) {
       const meta = document.createElement("div");
       meta.className = "provider-meta";
       meta.textContent =
-        srv.type === "sse"
+        srv.type === "sse" || srv.type === "http"
           ? `${srv.url || ""} (port ${srv.port})`
           : `${srv.command || ""} ${(srv.args || []).join(" ")} (port ${srv.port})`;
 
       card.append(title, meta);
 
-      if (!isShared) {
-        const actions = document.createElement("div");
-        actions.className = "mcp-backend-actions";
+      const actions = document.createElement("div");
+      actions.className = "mcp-backend-actions";
 
-        const editBtn = document.createElement("button");
-        editBtn.type = "button";
-        editBtn.className = "secondary-button";
-        editBtn.textContent = "Edit";
-        editBtn.addEventListener("click", () => {
-          mcpState.editingIndex = serverNames.indexOf(name);
-          showMcpEditForm(name, srv);
-        });
+      const editBtn = document.createElement("button");
+      editBtn.type = "button";
+      editBtn.className = "secondary-button";
+      editBtn.textContent = "Edit";
+      editBtn.addEventListener("click", () => {
+        mcpState.editingIndex = serverNames.indexOf(name);
+        showMcpEditForm(name, srv, isShared);
+      });
 
-        const deleteBtn = document.createElement("button");
-        deleteBtn.type = "button";
-        deleteBtn.className = "ghost-button";
-        deleteBtn.textContent = "Delete";
-        deleteBtn.addEventListener("click", () => {
-          delete mcpState.config.servers[name];
-          saveMcpConfig();
-        });
+      const deleteBtn = document.createElement("button");
+      deleteBtn.type = "button";
+      deleteBtn.className = "ghost-button";
+      deleteBtn.textContent = "Delete";
+      deleteBtn.addEventListener("click", () => {
+        const target = isShared
+          ? mcpState.config.shared_servers
+          : mcpState.config.servers;
+        delete target[name];
+        saveMcpConfig();
+      });
 
-        actions.append(editBtn, deleteBtn);
-        card.appendChild(actions);
-      } else {
-        // Shared backends are managed via SFTP import
+      actions.append(editBtn, deleteBtn);
+      card.appendChild(actions);
+
+      if (isShared) {
         const sharedTag = document.createElement("div");
         sharedTag.className = "provider-meta";
-        sharedTag.style.cssText = "color: var(--accent); font-weight: 600; margin-top: 4px;";
-        sharedTag.textContent = "Managed via SFTP shared config";
+        sharedTag.style.cssText =
+          "color: var(--accent); font-weight: 600; margin-top: 4px;";
+        sharedTag.textContent = "Imported via SFTP";
         card.appendChild(sharedTag);
       }
       grid.appendChild(card);
@@ -767,17 +768,15 @@ function renderMcpView(config, status) {
 
     section.appendChild(grid);
 
-    if (!isShared) {
-      const bottomAddBtn = document.createElement("button");
-      bottomAddBtn.type = "button";
-      bottomAddBtn.className = "primary-button";
-      bottomAddBtn.textContent = "+ Add Backend";
-      bottomAddBtn.addEventListener("click", () => {
-        mcpState.editingIndex = null;
-        showMcpEditForm(null, null);
-      });
-      section.appendChild(bottomAddBtn);
-    }
+    const bottomAddBtn = document.createElement("button");
+    bottomAddBtn.type = "button";
+    bottomAddBtn.className = "primary-button";
+    bottomAddBtn.textContent = "+ Add Backend";
+    bottomAddBtn.addEventListener("click", () => {
+      mcpState.editingIndex = null;
+      showMcpEditForm(null, null, isShared);
+    });
+    section.appendChild(bottomAddBtn);
 
     container.appendChild(section);
   }
@@ -790,16 +789,13 @@ function renderMcpView(config, status) {
     false,
   );
 
-  // Shared backends (from SFTP)
-  const sharedServers = config.shared_servers || {};
-  if (Object.keys(sharedServers).length) {
-    renderBackendGrid(
-      sharedServers,
-      "Shared Backends",
-      "Backends imported from the shared SFTP config. Managed remotely.",
-      true,
-    );
-  }
+  // Shared backends (from SFTP or manually added)
+  renderBackendGrid(
+    config.shared_servers || {},
+    "Shared Backends",
+    "Backends shared across teammates (imported via SFTP or added manually).",
+    true,
+  );
 
   // Router settings
   const routerSection = document.createElement("section");
@@ -1136,7 +1132,7 @@ function showSftpPreview(section, remoteConfig) {
     item.className = "provider-card";
     item.innerHTML =
       `<div class="provider-title"><strong>${name}</strong><span class="status-pill neutral">${srv.type || "stdio"}</span></div>` +
-      `<div class="provider-meta">${srv.type === "sse" ? (srv.url || "") : (srv.command || "")} (port ${srv.port || "?"})</div>`;
+      `<div class="provider-meta">${srv.type === "sse" || srv.type === "http" ? (srv.url || "") : (srv.command || "")} (port ${srv.port || "?"})</div>`;
     list.appendChild(item);
   });
 
@@ -1179,7 +1175,7 @@ function showSftpMessage(section, message, kind) {
   section.appendChild(msg);
 }
 
-function showMcpEditForm(name, srv) {
+function showMcpEditForm(name, srv, isShared) {
   const existingForm = byId("mcpEditForm");
   if (existingForm) existingForm.remove();
 
@@ -1199,7 +1195,7 @@ function showMcpEditForm(name, srv) {
   // Type
   const typeSelect = document.createElement("select");
   typeSelect.dataset.fieldName = "type";
-  ["stdio", "sse"].forEach((t) => {
+  ["stdio", "sse", "http"].forEach((t) => {
     const opt = document.createElement("option");
     opt.value = t;
     opt.textContent = t;
@@ -1240,11 +1236,32 @@ function showMcpEditForm(name, srv) {
   envField.appendChild(envRows);
   envField.appendChild(addEnvBtn);
 
-  // URL (sse)
+  // URL (sse / http)
   const urlField = createFormInput("URL", srv ? srv.url || "" : "", "text");
-  urlField.dataset.showFor = "sse";
+  urlField.dataset.showFor = "sse,http";
 
-  form.append(nameField, typeField, portField, commandField, argsField, envField, urlField);
+  // Headers (http) - key=value rows
+  const headersField = document.createElement("div");
+  headersField.className = "field";
+  headersField.dataset.showFor = "http";
+  const headersLabel = document.createElement("label");
+  headersLabel.textContent = "HTTP Headers";
+  headersField.appendChild(headersLabel);
+  const headersRows = document.createElement("div");
+  headersRows.className = "mcp-env-rows";
+  const existingHeaders = (srv && srv.headers) ? srv.headers : {};
+  Object.entries(existingHeaders).forEach(([key, value]) => {
+    addEnvRow(headersRows, key, value);
+  });
+  const addHeaderBtn = document.createElement("button");
+  addHeaderBtn.type = "button";
+  addHeaderBtn.className = "ghost-button";
+  addHeaderBtn.textContent = "+ Add header";
+  addHeaderBtn.addEventListener("click", () => addEnvRow(headersRows, "", ""));
+  headersField.appendChild(headersRows);
+  headersField.appendChild(addHeaderBtn);
+
+  form.append(nameField, typeField, portField, commandField, argsField, envField, urlField, headersField);
 
   // Toggle visibility based on type
   function updateFieldVisibility() {
@@ -1252,7 +1269,9 @@ function showMcpEditForm(name, srv) {
     [commandField, argsField, envField].forEach((f) => {
       f.style.display = selectedType === "stdio" ? "" : "none";
     });
-    urlField.style.display = selectedType === "sse" ? "" : "none";
+    urlField.style.display =
+      selectedType === "sse" || selectedType === "http" ? "" : "none";
+    headersField.style.display = selectedType === "http" ? "" : "none";
   }
   typeSelect.addEventListener("change", updateFieldVisibility);
   updateFieldVisibility();
@@ -1284,21 +1303,43 @@ function showMcpEditForm(name, srv) {
       if (k) newEnv[k] = v;
     });
 
+    // Read header rows
+    const newHeaders = {};
+    headersRows.querySelectorAll(".mcp-env-row").forEach((row) => {
+      const k = row.querySelector("input[placeholder='KEY']").value.trim();
+      const v = row.querySelector("input[placeholder='VALUE']").value;
+      if (k) newHeaders[k] = v;
+    });
+
     // Build server entry
     const entry = { type: newType, port: newPort };
     if (newType === "stdio") {
       entry.command = newCommand;
       entry.args = newArgs;
       entry.env = newEnv;
+    } else if (newType === "http") {
+      entry.url = newUrl;
+      entry.headers = newHeaders;
     } else {
       entry.url = newUrl;
     }
 
+    // Save to the correct config section
+    const target = isShared
+      ? mcpState.config.shared_servers
+      : mcpState.config.servers;
+    if (!target) {
+      // Ensure shared_servers exists
+      mcpState.config.shared_servers = {};
+    }
+    const saveTarget = isShared
+      ? mcpState.config.shared_servers
+      : mcpState.config.servers;
     // If renaming, remove old entry
     if (isEdit && name !== newName) {
-      delete mcpState.config.servers[name];
+      delete saveTarget[name];
     }
-    mcpState.config.servers[newName] = entry;
+    saveTarget[newName] = entry;
     form.remove();
     saveMcpConfig();
   });

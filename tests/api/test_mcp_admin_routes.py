@@ -45,6 +45,27 @@ def _seed_config(tmp_path: Path) -> None:
                         "url": "http://127.0.0.1:9999/sse",
                         "port": 9999,
                     },
+                    "composio": {
+                        "type": "http",
+                        "url": "https://connect.composio.dev/mcp",
+                        "headers": {"x-consumer-api-key": "real_composio_key"},
+                        "port": 7110,
+                    },
+                },
+                "shared_servers": {
+                    "remote-ssh": {
+                        "type": "stdio",
+                        "command": "node",
+                        "args": ["server.js"],
+                        "env": {"API_TOKEN": "shared_secret_token"},
+                        "port": 7200,
+                    },
+                    "composio-shared": {
+                        "type": "http",
+                        "url": "https://connect.composio.dev/mcp",
+                        "headers": {"x-consumer-api-key": "shared_composio_key"},
+                        "port": 7201,
+                    },
                 },
             }
         ),
@@ -70,6 +91,40 @@ def test_get_mcp_config_masks_env_secrets(monkeypatch, tmp_path):
     stripe = body["servers"]["stripe"]
     assert stripe["env"]["STRIPE_SECRET_KEY"] == MASKED_SECRET
     assert body["router_socket"] == "~/.mcp-router/sockets/router.sock"
+
+
+def test_get_mcp_config_masks_header_secrets(monkeypatch, tmp_path):
+    _set_home(monkeypatch, tmp_path)
+    _seed_config(tmp_path)
+    app = create_app(lifespan_enabled=False)
+
+    response = _local_client(app).get("/admin/api/mcp/config")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "composio" in body["servers"]
+    composio = body["servers"]["composio"]
+    assert composio["type"] == "http"
+    assert composio["headers"]["x-consumer-api-key"] == MASKED_SECRET
+    assert composio["url"] == "https://connect.composio.dev/mcp"
+
+
+def test_get_mcp_config_masks_shared_server_secrets(monkeypatch, tmp_path):
+    _set_home(monkeypatch, tmp_path)
+    _seed_config(tmp_path)
+    app = create_app(lifespan_enabled=False)
+
+    response = _local_client(app).get("/admin/api/mcp/config")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "shared_servers" in body
+    # Shared stdio server env should be masked
+    ssh = body["shared_servers"]["remote-ssh"]
+    assert ssh["env"]["API_TOKEN"] == MASKED_SECRET
+    # Shared http server header should be masked
+    composio_shared = body["shared_servers"]["composio-shared"]
+    assert composio_shared["headers"]["x-consumer-api-key"] == MASKED_SECRET
 
 
 def test_get_mcp_config_loopback_only(monkeypatch, tmp_path):
@@ -166,6 +221,87 @@ def test_apply_mcp_config_rejects_invalid(monkeypatch, tmp_path):
     assert len(body["errors"]) > 0
 
 
+def test_apply_mcp_config_resolves_masked_headers(monkeypatch, tmp_path):
+    _set_home(monkeypatch, tmp_path)
+    _seed_config(tmp_path)
+    app = create_app(lifespan_enabled=False)
+
+    response = _local_client(app).post(
+        "/admin/api/mcp/config/apply",
+        json={
+            "router_socket": "~/.mcp-router/sockets/router.sock",
+            "router_pidfile": "~/.mcp-router/run/router.pid",
+            "router_log": "~/.mcp-router/logs/router.log",
+            "health_timeout_s": 30,
+            "servers": {
+                "composio": {
+                    "type": "http",
+                    "url": "https://connect.composio.dev/mcp",
+                    "headers": {"x-consumer-api-key": MASKED_SECRET},
+                    "port": 7110,
+                },
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["applied"] is True
+    config_file = tmp_path / ".fcc" / "mcp_config.json"
+    data = json.loads(config_file.read_text(encoding="utf-8"))
+    assert (
+        data["servers"]["composio"]["headers"]["x-consumer-api-key"]
+        == "real_composio_key"
+    )
+
+
+def test_apply_mcp_config_resolves_shared_server_secrets(monkeypatch, tmp_path):
+    _set_home(monkeypatch, tmp_path)
+    _seed_config(tmp_path)
+    app = create_app(lifespan_enabled=False)
+
+    response = _local_client(app).post(
+        "/admin/api/mcp/config/apply",
+        json={
+            "router_socket": "~/.mcp-router/sockets/router.sock",
+            "router_pidfile": "~/.mcp-router/run/router.pid",
+            "router_log": "~/.mcp-router/logs/router.log",
+            "health_timeout_s": 30,
+            "servers": {},
+            "shared_servers": {
+                "remote-ssh": {
+                    "type": "stdio",
+                    "command": "node",
+                    "args": ["server.js"],
+                    "env": {"API_TOKEN": MASKED_SECRET},
+                    "port": 7200,
+                },
+                "composio-shared": {
+                    "type": "http",
+                    "url": "https://connect.composio.dev/mcp",
+                    "headers": {"x-consumer-api-key": MASKED_SECRET},
+                    "port": 7201,
+                },
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["applied"] is True
+    config_file = tmp_path / ".fcc" / "mcp_config.json"
+    data = json.loads(config_file.read_text(encoding="utf-8"))
+    # Masked shared secrets should be resolved to originals
+    assert (
+        data["shared_servers"]["remote-ssh"]["env"]["API_TOKEN"]
+        == "shared_secret_token"
+    )
+    assert (
+        data["shared_servers"]["composio-shared"]["headers"]["x-consumer-api-key"]
+        == "shared_composio_key"
+    )
+
+
 def test_apply_mcp_config_loopback_only(monkeypatch, tmp_path):
     _set_home(monkeypatch, tmp_path)
     _seed_config(tmp_path)
@@ -230,6 +366,70 @@ def test_validate_mcp_config_invalid(monkeypatch, tmp_path):
     body = response.json()
     assert body["valid"] is False
     assert any("requires 'url'" in e for e in body["errors"])
+
+
+def test_validate_mcp_config_http_valid(monkeypatch, tmp_path):
+    _set_home(monkeypatch, tmp_path)
+    _seed_config(tmp_path)
+    app = create_app(lifespan_enabled=False)
+
+    response = _local_client(app).post(
+        "/admin/api/mcp/config/validate",
+        json={
+            "router_socket": "~/.mcp-router/sockets/router.sock",
+            "router_pidfile": "~/.mcp-router/run/router.pid",
+            "router_log": "~/.mcp-router/logs/router.log",
+            "health_timeout_s": 30,
+            "servers": {
+                "composio": {
+                    "type": "http",
+                    "url": "https://connect.composio.dev/mcp",
+                    "headers": {"x-consumer-api-key": "key"},
+                    "port": 7110,
+                }
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is True
+    assert body["errors"] == []
+
+
+def test_validate_mcp_config_shared_server_duplicate_port(monkeypatch, tmp_path):
+    _set_home(monkeypatch, tmp_path)
+    _seed_config(tmp_path)
+    app = create_app(lifespan_enabled=False)
+
+    response = _local_client(app).post(
+        "/admin/api/mcp/config/validate",
+        json={
+            "router_socket": "~/.mcp-router/sockets/router.sock",
+            "router_pidfile": "~/.mcp-router/run/router.pid",
+            "router_log": "~/.mcp-router/logs/router.log",
+            "health_timeout_s": 30,
+            "servers": {
+                "local-backend": {
+                    "type": "stdio",
+                    "command": "npx",
+                    "port": 7200,
+                }
+            },
+            "shared_servers": {
+                "shared-backend": {
+                    "type": "stdio",
+                    "command": "node",
+                    "port": 7200,  # duplicate with local-backend
+                }
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is False
+    assert any("port 7200 already used" in e for e in body["errors"])
 
 
 # ---------------------------------------------------------------------------

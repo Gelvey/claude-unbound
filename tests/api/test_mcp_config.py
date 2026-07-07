@@ -12,6 +12,8 @@ import pytest
 from api.mcp_config import (
     MASKED_SECRET,
     McpBackend,
+    _mask_headers,
+    _unmask_headers,
     load_mcp_config,
     validate_mcp_config,
     write_mcp_config,
@@ -62,6 +64,32 @@ class TestMcpBackendModel:
         assert backend.type == "sse"
         assert backend.url == "http://127.0.0.1:9999/sse"
 
+    def test_http_requires_url(self) -> None:
+        with pytest.raises(ValueError, match="http backend requires 'url'"):
+            McpBackend(name="test", type="http", port=7110)
+
+    def test_http_valid(self) -> None:
+        backend = McpBackend(
+            name="composio",
+            type="http",
+            url="https://connect.composio.dev/mcp",
+            headers={"x-consumer-api-key": "secret"},
+            port=7110,
+        )
+        assert backend.name == "composio"
+        assert backend.type == "http"
+        assert backend.url == "https://connect.composio.dev/mcp"
+        assert backend.headers == {"x-consumer-api-key": "secret"}
+
+    def test_http_empty_headers_default(self) -> None:
+        backend = McpBackend(
+            name="test",
+            type="http",
+            url="http://localhost/mcp",
+            port=7110,
+        )
+        assert backend.headers == {}
+
     def test_port_out_of_range(self) -> None:
         with pytest.raises(ValueError):
             McpBackend(name="test", type="sse", url="http://localhost/sse", port=0)
@@ -111,9 +139,27 @@ class TestValidateMcpConfig:
         errors = validate_mcp_config(servers)
         assert any("requires 'url'" in e for e in errors)
 
+    def test_http_needs_url(self) -> None:
+        servers = {
+            "test": {"type": "http", "port": 7110},
+        }
+        errors = validate_mcp_config(servers)
+        assert any("requires 'url'" in e for e in errors)
+
+    def test_http_valid_config(self) -> None:
+        servers = {
+            "composio": {
+                "type": "http",
+                "url": "https://connect.composio.dev/mcp",
+                "headers": {"x-consumer-api-key": "key"},
+                "port": 7110,
+            },
+        }
+        assert validate_mcp_config(servers) == []
+
     def test_invalid_type(self) -> None:
         servers = {
-            "test": {"type": "http", "port": 7101},
+            "test": {"type": "ftp", "port": 7101},
         }
         errors = validate_mcp_config(servers)
         assert any("type must be" in e for e in errors)
@@ -210,6 +256,37 @@ class TestWriteMcpConfig:
         data = json.loads(config_file.read_text(encoding="utf-8"))
         assert "name" not in data["servers"]["stripe"]
 
+    def test_writes_shared_servers(self, monkeypatch, tmp_path: Path) -> None:
+        _set_home(monkeypatch, tmp_path)
+        monkeypatch.delenv("MCP_ROUTER_CONFIG", raising=False)
+        config_file = tmp_path / ".fcc" / "mcp_config.json"
+        config_file.parent.mkdir(parents=True)
+
+        result = write_mcp_config(
+            router_socket="~/.mcp-router/sockets/router.sock",
+            router_log="~/.mcp-router/logs/router.log",
+            router_pidfile="~/.mcp-router/run/router.pid",
+            health_timeout_s=30,
+            servers={},
+            shared_servers={
+                "remote-ssh": {
+                    "type": "stdio",
+                    "command": "node",
+                    "args": ["server.js"],
+                    "env": {"API_TOKEN": "secret_token"},
+                    "port": 7200,
+                }
+            },
+        )
+
+        assert result.valid is True
+        assert result.applied is True
+        data = json.loads(config_file.read_text(encoding="utf-8"))
+        assert "remote-ssh" in data["shared_servers"]
+        assert (
+            data["shared_servers"]["remote-ssh"]["env"]["API_TOKEN"] == "secret_token"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Secret masking on read
@@ -242,6 +319,33 @@ class TestSecretMasking:
         masked = {"KEY": ""}
         result = _unmask_env(masked, original)
         assert result == {"KEY": ""}
+
+    def test_mask_headers_masks_values(self) -> None:
+        result = _mask_headers({"x-consumer-api-key": "secret-key", "empty-header": ""})
+        assert result == {
+            "x-consumer-api-key": MASKED_SECRET,
+            "empty-header": "",
+        }
+
+    def test_unmask_headers_leaves_masked_unchanged(self) -> None:
+        original = {"x-consumer-api-key": "real-key", "other": "other-val"}
+        masked = {
+            "x-consumer-api-key": MASKED_SECRET,
+            "other": "new-val",
+            "new-header": "brand-new",
+        }
+        result = _unmask_headers(masked, original)
+        assert result == {
+            "x-consumer-api-key": "real-key",
+            "other": "new-val",
+            "new-header": "brand-new",
+        }
+
+    def test_unmask_headers_empty_masked_becomes_empty(self) -> None:
+        original = {"x-consumer-api-key": "real-key"}
+        masked = {"x-consumer-api-key": ""}
+        result = _unmask_headers(masked, original)
+        assert result == {"x-consumer-api-key": ""}
 
 
 # ---------------------------------------------------------------------------
@@ -303,3 +407,47 @@ class TestLoadMcpConfig:
         config, path = load_mcp_config()
         assert path == custom
         assert config.health_timeout_s == 10
+
+    def test_load_shared_servers(self, monkeypatch, tmp_path: Path) -> None:
+        _set_home(monkeypatch, tmp_path)
+        monkeypatch.delenv("MCP_ROUTER_CONFIG", raising=False)
+        config_file = tmp_path / ".fcc" / "mcp_config.json"
+        config_file.parent.mkdir(parents=True)
+        config_file.write_text(
+            json.dumps(
+                {
+                    "router_socket": "~/.mcp-router/sockets/router.sock",
+                    "router_pidfile": "~/.mcp-router/run/router.pid",
+                    "router_log": "~/.mcp-router/logs/router.log",
+                    "health_timeout_s": 30,
+                    "servers": {},
+                    "shared_servers": {
+                        "remote-ssh": {
+                            "type": "stdio",
+                            "command": "node",
+                            "args": ["server.js"],
+                            "env": {"API_TOKEN": "secret_token"},
+                            "port": 7200,
+                        },
+                        "composio-shared": {
+                            "type": "http",
+                            "url": "https://connect.composio.dev/mcp",
+                            "headers": {"x-consumer-api-key": "key123"},
+                            "port": 7201,
+                        },
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        config, _path = load_mcp_config()
+        assert "remote-ssh" in config.shared_servers
+        assert config.shared_servers["remote-ssh"].command == "node"
+        assert config.shared_servers["remote-ssh"].env["API_TOKEN"] == "secret_token"
+        assert "composio-shared" in config.shared_servers
+        assert config.shared_servers["composio-shared"].type == "http"
+        assert (
+            config.shared_servers["composio-shared"].headers["x-consumer-api-key"]
+            == "key123"
+        )

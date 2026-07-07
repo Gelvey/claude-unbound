@@ -491,21 +491,35 @@ class McpConfigPayload(BaseModel):
     router_log: str = "~/.mcp-router/logs/router.log"
     health_timeout_s: int = 30
     servers: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    shared_servers: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 def _mask_mcp_config(config: dict[str, Any]) -> dict[str, Any]:
-    """Return config with env secrets masked for display."""
+    """Return config with env and header secrets masked for display."""
     masked = dict(config)
-    masked_servers = {}
-    for name, srv in config.get("servers", {}).items():
+    masked["servers"] = _mask_server_dict(config.get("servers", {}))
+    masked["shared_servers"] = _mask_server_dict(config.get("shared_servers", {}))
+    return masked
+
+
+def _mask_server_dict(
+    servers: dict[str, Any],
+) -> dict[str, Any]:
+    """Mask env and header secrets in a servers dict."""
+    masked = {}
+    for name, srv in servers.items():
         masked_srv = dict(srv)
         if "env" in masked_srv and isinstance(masked_srv["env"], dict):
             masked_srv["env"] = {
                 k: (MCP_MASKED_SECRET if v else "")
                 for k, v in masked_srv["env"].items()
             }
-        masked_servers[name] = masked_srv
-    masked["servers"] = masked_servers
+        if "headers" in masked_srv and isinstance(masked_srv["headers"], dict):
+            masked_srv["headers"] = {
+                k: (MCP_MASKED_SECRET if v else "")
+                for k, v in masked_srv["headers"].items()
+            }
+        masked[name] = masked_srv
     return masked
 
 
@@ -513,7 +527,7 @@ def _resolve_masked_envs(
     new_servers: dict[str, dict[str, Any]],
     original_servers: dict[str, dict[str, Any]],
 ) -> dict[str, dict[str, Any]]:
-    """Resolve masked env values against original config."""
+    """Resolve masked env and header values against original config."""
     resolved = {}
     for name, srv in new_servers.items():
         resolved_srv = dict(srv)
@@ -522,6 +536,12 @@ def _resolve_masked_envs(
             resolved_srv["env"] = {
                 k: (original_env.get(k, "") if v == MCP_MASKED_SECRET else v)
                 for k, v in resolved_srv["env"].items()
+            }
+        if "headers" in resolved_srv and isinstance(resolved_srv["headers"], dict):
+            original_headers = original_servers.get(name, {}).get("headers", {})
+            resolved_srv["headers"] = {
+                k: (original_headers.get(k, "") if v == MCP_MASKED_SECRET else v)
+                for k, v in resolved_srv["headers"].items()
             }
         resolved[name] = resolved_srv
     return resolved
@@ -556,10 +576,16 @@ async def validate_mcp_config_route(payload: McpConfigPayload, request: Request)
     original_servers = {
         name: srv.model_dump(exclude={"name"}) for name, srv in config.servers.items()
     }
+    original_shared = {
+        name: srv.model_dump(exclude={"name"})
+        for name, srv in config.shared_servers.items()
+    }
     resolved = _resolve_masked_envs(payload.servers, original_servers)
+    resolved_shared = _resolve_masked_envs(payload.shared_servers, original_shared)
     from .mcp_config import validate_mcp_config as validate_fn
 
-    errors = validate_fn(resolved)
+    all_servers = {**resolved, **resolved_shared}
+    errors = validate_fn(all_servers)
     return {"valid": len(errors) == 0, "errors": errors}
 
 
@@ -570,18 +596,19 @@ async def apply_mcp_config(payload: McpConfigPayload, request: Request):
     original_servers = {
         name: srv.model_dump(exclude={"name"}) for name, srv in config.servers.items()
     }
-    resolved = _resolve_masked_envs(payload.servers, original_servers)
-    shared_servers_dict = {
+    original_shared = {
         name: srv.model_dump(exclude={"name"})
         for name, srv in config.shared_servers.items()
     }
+    resolved = _resolve_masked_envs(payload.servers, original_servers)
+    resolved_shared = _resolve_masked_envs(payload.shared_servers, original_shared)
     result = write_mcp_config(
         router_socket=payload.router_socket,
         router_log=payload.router_log,
         router_pidfile=payload.router_pidfile,
         health_timeout_s=payload.health_timeout_s,
         servers=resolved,
-        shared_servers=shared_servers_dict,
+        shared_servers=resolved_shared,
     )
     return result.model_dump()
 

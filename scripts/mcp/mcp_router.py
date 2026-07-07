@@ -40,8 +40,10 @@ from pathlib import Path
 from typing import Any
 
 import anyio
+import httpx
 from mcp import ClientSession, types
 from mcp.client.sse import sse_client
+from mcp.client.streamable_http import streamable_http_client
 from mcp.server import Server
 from mcp.shared.message import SessionMessage
 
@@ -68,7 +70,12 @@ class Backend:
     def __init__(self, name: str, cfg: dict[str, Any]) -> None:
         self.name = name
         self.cfg = cfg
-        self.url = cfg.get("url") or f"http://127.0.0.1:{cfg['port']}/sse"
+        if cfg.get("url"):
+            self.url = cfg["url"]
+        elif cfg.get("type") == "http":
+            self.url = f"http://127.0.0.1:{cfg['port']}/mcp"
+        else:
+            self.url = f"http://127.0.0.1:{cfg['port']}/sse"
         # tools registered by this backend (filled in on activation)
         self.tools: dict[str, types.Tool] = {}
         # active client session (kept open for tool-call forwarding)
@@ -311,8 +318,15 @@ async def _activate(name: str, backends: dict[str, Backend]) -> dict[str, Any]:
                 "tool_count": len(backend.tools),
             }
         try:
-            cm = sse_client(backend.url)
-            read_stream, write_stream = await cm.__aenter__()
+            backend_type = backend.cfg.get("type", "stdio")
+            if backend_type == "http":
+                headers = backend.cfg.get("headers", {})
+                http_client = httpx.AsyncClient(headers=headers) if headers else None
+                cm = streamable_http_client(backend.url, http_client=http_client)
+                read_stream, write_stream, _get_session_id = await cm.__aenter__()
+            else:
+                cm = sse_client(backend.url)
+                read_stream, write_stream = await cm.__aenter__()
             session = ClientSession(read_stream, write_stream)
             await session.__aenter__()
             await session.initialize()
@@ -343,7 +357,7 @@ async def _deactivate(name: str, backends: dict[str, Backend]) -> dict[str, Any]
         try:
             await backend._session_cm.__aexit__(None, None, None)
         except Exception:
-            log.exception("Error closing SSE stream for %s", name)
+            log.exception("Error closing client stream for %s", name)
         backend._session = None
         backend._session_cm = None
         backend.tools.clear()

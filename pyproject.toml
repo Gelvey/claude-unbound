@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "free-claude-code"
-version = "2.15.0"
+version = "2.16.1"
 description = "Multi-provider proxy for Claude Code and Codex: routes Anthropic Messages and OpenAI Responses traffic to free, paid, or local models with prompt-cache affinity, long-context fallback routing, opt-in HTTP/2, uvloop/orjson-accelerated low-latency streaming, and cache/cost metrics passthrough"
 readme = "README.md"
 requires-python = ">=3.14.0"
@@ -136,8 +136,8 @@ python-version = "3.14"
 # Optional voice extra: nvidia-riva-client for nvidia_nim transcription provider
 # MCP router (scripts/mcp/) runs in its own venv with the `mcp` SDK; those imports
 # are listed here so ty doesn't fail when the SDK isn't in the main project venv.
-allowed-unresolved-imports = ["torch", "transformers", "librosa", "riva.client", "mcp", "mcp.client.sse", "mcp.server", "mcp.shared.message"]
+allowed-unresolved-imports = ["torch", "transformers", "librosa", "riva.client", "mcp", "mcp.client.sse", "mcp.client.streamable_http", "mcp.server", "mcp.shared.message"]
 # MCP router (scripts/mcp/) runs in its own venv with the `mcp` SDK installed there,
 # not in the main project venv. Replace its imports with Any so ty doesn't try to
 # resolve members (ClientSession, types, Server, etc.) that aren't installed here.
-replace-imports-with-any = ["mcp", "mcp.client.sse", "mcp.server", "mcp.shared.message"]
+replace-imports-with-any = ["mcp", "mcp.client.sse", "mcp.client.streamable_http", "mcp.server", "mcp.shared.message"]
