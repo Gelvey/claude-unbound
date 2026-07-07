@@ -136,6 +136,70 @@ async def test_get_router_status_returns_not_running_on_connection_error(
     assert result == {"running": False}
 
 
+@pytest.mark.asyncio
+async def test_get_router_status_returns_backends_when_active_is_empty(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """get_router_status returns list_servers result even when list_active_servers returns []."""
+    sock_path = str(tmp_path / "router.sock")
+    Path(sock_path).touch()
+
+    backends = [
+        {
+            "name": "[shared] stripe",
+            "type": "stdio",
+            "port": 7101,
+            "url": "http://127.0.0.1:7101/sse",
+            "activated": False,
+            "tool_count": 0,
+        },
+        {
+            "name": "[shared] supabase-clickdns",
+            "type": "stdio",
+            "port": 7102,
+            "url": "http://127.0.0.1:7102/sse",
+            "activated": False,
+            "tool_count": 0,
+        },
+    ]
+    list_servers_resp = json.dumps(backends)
+    list_active_resp = json.dumps([])
+    raw = (
+        json.dumps(
+            {"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "2024-11-05"}}
+        )
+        + "\n"
+        + json.dumps({"jsonrpc": "2.0", "id": 2, "result": {"tools": []}})
+        + "\n"
+        + json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "result": {"content": [{"type": "text", "text": list_servers_resp}]},
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 4,
+                "result": {"content": [{"type": "text", "text": list_active_resp}]},
+            }
+        )
+        + "\n"
+    )
+
+    async def mock_send(path: str, messages: list) -> str:
+        return raw
+
+    monkeypatch.setattr("api.mcp_config._send_jsonrpc_async", mock_send)
+    result = await get_router_status(sock_path)
+    assert result["running"] is True
+    assert len(result["backends"]) == 2
+    assert result["backends"][0]["name"] == "[shared] stripe"
+
+
 # ---------------------------------------------------------------------------
 # _parse_jsonrpc_results tests
 # ---------------------------------------------------------------------------

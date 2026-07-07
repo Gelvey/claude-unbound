@@ -431,9 +431,13 @@ async def get_router_status(router_socket: str) -> dict[str, Any]:
         all_servers: list[dict[str, Any]] = []
 
         for result in results:
-            if isinstance(result, list) and (
-                all("tool_count" in item and "activated" in item for item in result)
-                or not all("tool_names" in item for item in result)
+            if (
+                isinstance(result, list)
+                and result
+                and (
+                    all("tool_count" in item and "activated" in item for item in result)
+                    or not all("tool_names" in item for item in result)
+                )
             ):
                 all_servers = result
 
