@@ -50,13 +50,6 @@ def _shell_interpreter() -> str:
     return sh
 
 
-def _powershell_interpreter() -> str:
-    pwsh = shutil.which("pwsh") or shutil.which("powershell")
-    if pwsh is None:
-        pytest.skip("PowerShell is not available on this platform")
-    return pwsh
-
-
 def test_ci_sh_runs_ci_checks_in_order() -> None:
     text = _script_text("ci.sh")
 
@@ -145,92 +138,3 @@ def test_ci_sh_fail_fast_runs_checks_sequentially() -> None:
         suppress_index < ruff_format_index < ruff_check_index < ty_index < pytest_index
     )
     assert "for check_id in $CHECK_ORDER" in main
-
-
-def test_ci_ps1_runs_ci_checks_in_order() -> None:
-    text = _script_text("ci.ps1")
-
-    assert '"suppressions"' in text
-    assert '"ruff-format"' in text
-    assert '"ruff-check"' in text
-    assert '"ty"' in text
-    assert '"pytest"' in text
-    assert "Select-String -Pattern" in text
-    assert "Fix the underlying type errors instead" in text
-    assert ".venv" in text
-    assert ".git" in text
-    assert '"format", "--check"' in text
-    assert '"-v", "--tb=short"' in text
-    assert "-Only" in text
-    assert "-Skip" in text
-    assert "-DryRun" in text
-    assert "uv is required but was not found on PATH" in text
-    assert "npm" not in text
-    assert "smoke/" not in text
-    assert "uv self update" not in text
-
-
-def test_ci_ps1_dry_run_does_not_require_uv() -> None:
-    result = subprocess.run(
-        [
-            _powershell_interpreter(),
-            "-NoProfile",
-            "-File",
-            str(_repo_root() / "scripts" / "ci.ps1"),
-            "-Only",
-            "pytest",
-            "-DryRun",
-        ],
-        cwd=_repo_root(),
-        env={**os.environ, "PATH": _path_without_uv()},
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert result.returncode == 0
-    assert "+ uv run pytest -v --tb=short" in result.stdout
-    assert "uv is required" not in result.stderr
-
-
-def test_ci_ps1_suppression_only_does_not_require_uv() -> None:
-    result = subprocess.run(
-        [
-            _powershell_interpreter(),
-            "-NoProfile",
-            "-File",
-            str(_repo_root() / "scripts" / "ci.ps1"),
-            "-Only",
-            "suppressions",
-        ],
-        cwd=_repo_root(),
-        env={**os.environ, "PATH": _path_without_uv()},
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert result.returncode == 0
-    assert "Ban type ignore suppressions" in result.stdout
-    assert "uv is required" not in result.stderr
-
-
-def test_ci_ps1_fail_fast_runs_checks_sequentially() -> None:
-    text = _script_text("ci.ps1")
-
-    assert "foreach ($checkId in $CheckOrder)" in text
-    assert "Invoke-SuppressionsCheck" in text
-    assert "Invoke-RuffFormatCheck" in text
-    assert "Invoke-RuffLintCheck" in text
-    assert "Invoke-TyCheck" in text
-    assert "Invoke-PytestCheck" in text
-
-    suppress_index = text.index("function Invoke-SuppressionsCheck")
-    ruff_format_index = text.index("function Invoke-RuffFormatCheck")
-    ruff_check_index = text.index("function Invoke-RuffLintCheck")
-    ty_index = text.index("function Invoke-TyCheck")
-    pytest_index = text.index("function Invoke-PytestCheck")
-
-    assert (
-        suppress_index < ruff_format_index < ruff_check_index < ty_index < pytest_index
-    )

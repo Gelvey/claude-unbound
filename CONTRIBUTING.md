@@ -23,12 +23,6 @@ The same five checks GitHub Actions runs on `push` and `pull_request`:
 ./scripts/ci.sh
 ```
 
-The Windows equivalent:
-
-```powershell
-.\scripts\ci.ps1
-```
-
 Gates:
 
 1. `CI / Ban type ignore suppressions` — no `# type: ignore` or `# ty: ignore` allowed in any tracked `.py`.
@@ -37,11 +31,11 @@ Gates:
 4. `CI / ty` — `uv run ty check`.
 5. `CI / pytest` — `uv run pytest -v --tb=short`.
 
-Useful flags (PowerShell equivalents in parentheses):
+Useful flags:
 
-- `--only pytest` (`-Only pytest`) — run only pytest.
-- `--skip pytest` (`-Skip pytest`) — skip the long-running test step.
-- `--dry-run` (`-DryRun`) — list the gates without executing them.
+- `--only pytest` — run only pytest.
+- `--skip pytest` — skip the long-running test step.
+- `--dry-run` — list the gates without executing them.
 
 ## Branch protection on `main`
 

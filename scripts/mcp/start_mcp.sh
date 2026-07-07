@@ -4,7 +4,7 @@
 #   - socat bridging a Unix socket to the meta-router's stdio
 #
 # Lifecycle: this script is meant to be the *first command* in a dedicated
-# kitty tab opened by fcc-launcher.sh. When that tab (or the whole kitty
+# kitty tab opened by launcher.sh. When that tab (or the whole kitty
 # window) closes, the tab's process group is killed and this script + all
 # children die with it. Nothing is enabled at boot; nothing persists.
 #

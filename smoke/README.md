@@ -16,7 +16,7 @@ belong under `tests/` and must stay green with plain `uv run pytest`.
 
 ## Required Local Commands
 
-```powershell
+```bash
 uv run pytest smoke --collect-only -q
 uv run pytest smoke -n 0 -s --tb=short
 ```
@@ -26,18 +26,15 @@ writes skip entries to `.smoke-results/`.
 
 ## Product Smoke Run
 
-```powershell
-$env:FCC_LIVE_SMOKE = "1"
-uv run pytest smoke -n 0 -s --tb=short
+```bash
+FCC_LIVE_SMOKE=1 uv run pytest smoke -n 0 -s --tb=short
 ```
 
 Provider smoke scenarios can run providers in parallel while preserving
 sequential execution within each provider:
 
-```powershell
-$env:FCC_LIVE_SMOKE = "1"
-$env:FCC_SMOKE_TARGETS = "providers"
-uv run pytest smoke -n auto --dist=loadgroup -s --tb=short
+```bash
+FCC_LIVE_SMOKE=1 FCC_SMOKE_TARGETS=providers uv run pytest smoke -n auto --dist=loadgroup -s --tb=short
 ```
 
 Provider product E2E runs once per configured provider, independent of `MODEL`,
@@ -79,44 +76,36 @@ Heavy/side-effectful targets are opt-in:
 
 ## Examples
 
-```powershell
-$env:FCC_LIVE_SMOKE = "1"
-$env:FCC_SMOKE_PROVIDER_MATRIX = "open_router,nvidia_nim,deepseek,lmstudio,llamacpp,ollama"
-uv run pytest smoke/product -n 0 -s --tb=short
+```bash
+FCC_LIVE_SMOKE=1 FCC_SMOKE_PROVIDER_MATRIX=open_router,nvidia_nim,deepseek,lmstudio,llamacpp,ollama \
+  uv run pytest smoke/product -n 0 -s --tb=short
 ```
 
-```powershell
-$env:FCC_LIVE_SMOKE = "1"
-$env:FCC_SMOKE_TARGETS = "ollama"
-$env:OLLAMA_BASE_URL = "http://localhost:11434"
-uv run pytest smoke/prereq smoke/product -n 0 -s --tb=short
+```bash
+FCC_LIVE_SMOKE=1 FCC_SMOKE_TARGETS=ollama OLLAMA_BASE_URL=http://localhost:11434 \
+  uv run pytest smoke/prereq smoke/product -n 0 -s --tb=short
 ```
 
-```powershell
-$env:FCC_LIVE_SMOKE = "1"
-$env:FCC_SMOKE_TARGETS = "telegram,discord,voice"
-$env:FCC_SMOKE_RUN_VOICE = "1"
-uv run pytest smoke/product -n 0 -s --tb=short
+```bash
+FCC_LIVE_SMOKE=1 FCC_SMOKE_TARGETS=telegram,discord,voice FCC_SMOKE_RUN_VOICE=1 \
+  uv run pytest smoke/product -n 0 -s --tb=short
 ```
 
-```powershell
-$env:FCC_LIVE_SMOKE = "1"
-$env:FCC_SMOKE_TARGETS = "nvidia_nim_cli"
-$env:FCC_SMOKE_NIM_MODELS = "z-ai/glm-5.1,moonshotai/kimi-k2.6,minimaxai/minimax-m2.7,nvidia/nemotron-3-super-120b-a12b,deepseek-ai/deepseek-v4-pro,deepseek-ai/deepseek-v4-flash"
-uv run pytest smoke/product -n 0 -s --tb=short
+```bash
+FCC_LIVE_SMOKE=1 FCC_SMOKE_TARGETS=nvidia_nim_cli \
+  FCC_SMOKE_NIM_MODELS="z-ai/glm-5.1,moonshotai/kimi-k2.6,minimaxai/minimax-m2.7,nvidia/nemotron-3-super-120b-a12b,deepseek-ai/deepseek-v4-pro,deepseek-ai/deepseek-v4-flash" \
+  uv run pytest smoke/product -n 0 -s --tb=short
 ```
 
-```powershell
-$env:FCC_LIVE_SMOKE = "1"
-$env:FCC_SMOKE_TARGETS = "openrouter_free_cli"
-$env:FCC_SMOKE_OPENROUTER_FREE_MODELS = "nvidia/nemotron-3-super-120b-a12b:free,openai/gpt-oss-120b:free,poolside/laguna-m.1:free"
-uv run pytest smoke/product -n 0 -s --tb=short
+```bash
+FCC_LIVE_SMOKE=1 FCC_SMOKE_TARGETS=openrouter_free_cli \
+  FCC_SMOKE_OPENROUTER_FREE_MODELS="nvidia/nemotron-3-super-120b-a12b:free,openai/gpt-oss-120b:free,poolside/laguna-m.1:free" \
+  uv run pytest smoke/product -n 0 -s --tb=short
 ```
 
-```powershell
-$env:FCC_LIVE_SMOKE = "1"
-$env:FCC_SMOKE_TARGETS = "messaging,config,extensibility"
-uv run pytest smoke/product -n 0 -s --tb=short
+```bash
+FCC_LIVE_SMOKE=1 FCC_SMOKE_TARGETS=messaging,config,extensibility \
+  uv run pytest smoke/product -n 0 -s --tb=short
 ```
 
 ## Environment
@@ -151,12 +140,11 @@ uv run pytest smoke/product -n 0 -s --tb=short
 - `FCC_SMOKE_INTERACTIVE=1`: enables manual inbound Telegram/Discord checks.
 - `FCC_SMOKE_RUN_VOICE=1`: allows voice transcription backends to load/run.
 
-## Windows / nested `uv run`
+## Child process execution
 
 Run smoke the same way you run tests (`uv run pytest smoke` from the repo). Child
 processes use the **same Python interpreter** as the test runner, not nested
-`uv run`, so Windows does not try to replace `free-claude-code.exe` while it is
-locked.
+`uv run`.
 
 ## Failure Classes
 

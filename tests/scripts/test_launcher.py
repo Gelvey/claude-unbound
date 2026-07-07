@@ -8,7 +8,7 @@ def _repo_root() -> Path:
 
 
 def _script_text() -> str:
-    return (_repo_root() / "scripts" / "fcc-launcher.sh").read_text(encoding="utf-8")
+    return (_repo_root() / "scripts" / "launcher.sh").read_text(encoding="utf-8")
 
 
 def _braced_body(text: str, declaration: str) -> str:
@@ -29,11 +29,11 @@ def _braced_body(text: str, declaration: str) -> str:
 
 
 def _run_launcher(*env_overrides: str) -> subprocess.CompletedProcess[str]:
-    """Run fcc-launcher.sh and return the result.
+    """Run launcher.sh and return the result.
 
     Strips kitty/fcc-* from PATH so the script exits early (no real launch).
     """
-    sh = _repo_root() / "scripts" / "fcc-launcher.sh"
+    sh = _repo_root() / "scripts" / "launcher.sh"
     # Build a minimal PATH that excludes kitty and fcc-* binaries.
     minimal_path = "/usr/bin:/bin"
     env = {**os.environ, "PATH": minimal_path}
@@ -55,8 +55,8 @@ def _run_launcher(*env_overrides: str) -> subprocess.CompletedProcess[str]:
 
 
 def test_launcher_sh_is_valid_bash() -> None:
-    """fcc-launcher.sh passes bash -n syntax check."""
-    script = _repo_root() / "scripts" / "fcc-launcher.sh"
+    """launcher.sh passes bash -n syntax check."""
+    script = _repo_root() / "scripts" / "launcher.sh"
     result = subprocess.run(
         ["bash", "-n", str(script)],
         capture_output=True,

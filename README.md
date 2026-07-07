@@ -50,8 +50,8 @@ This is a personal fork of [Gelvey/claude-unbound](https://github.com/Gelvey/cla
 
 - **OpenRouter ZDR enforcement** — `data_collection=allow` is forced on every OpenRouter request (upstream `openrouter/free` policy). See `providers/openrouter.py`.
 - **MCP meta-router** — bundled `scripts/mcp/` router, CLI launcher, and example config so MCP servers can sit behind the proxy.
-- **`scripts/fcc-launcher.sh`** — convenience wrapper that opens a kitty window with tabs for `fcc-server`, `fcc-claude`, and the MCP meta-router (macOS & Linux).
-- **Path portability** — bundled scripts derive all paths at runtime: `Path(__file__).resolve().parent` for in-repo paths (e.g. `scripts/mcp/mcp_router.py`’s config default at line 56), `cd "$(dirname "$0")" && pwd` in shell, and `$HOME`-based derivations in `scripts/fcc-launcher.sh` and `scripts/mcp/start_mcp.sh`’s `~/.mcp-router/` state/pid/log directories, and a pure-string-substitution `expand_path()` helper in `scripts/mcp/start_mcp.sh` so example configs can use portable `~/...` placeholders. No host-specific absolute paths are committed.
+- **`scripts/launcher.sh`** — convenience wrapper that opens a kitty window with tabs for `fcc-server`, `fcc-claude`, and the MCP meta-router (macOS & Linux).
+- **Path portability** — bundled scripts derive all paths at runtime: `Path(__file__).resolve().parent` for in-repo paths (e.g. `scripts/mcp/mcp_router.py`’s config default at line 56), `cd "$(dirname "$0")" && pwd` in shell, and `$HOME`-based derivations in `scripts/launcher.sh` and `scripts/mcp/start_mcp.sh`’s `~/.mcp-router/` state/pid/log directories, and a pure-string-substitution `expand_path()` helper in `scripts/mcp/start_mcp.sh` so example configs can use portable `~/...` placeholders. No host-specific absolute paths are committed.
 
 ### Sanitization guarantees
 
@@ -69,7 +69,7 @@ The MCP meta-router (`scripts/mcp/`) exposes multiple MCP servers through a sing
 
 - **Canonical config**: `~/.fcc/mcp_config.json` (created automatically on first launcher run from `scripts/mcp/mcp_config.example.json`). Edit via the **Admin UI → MCP Router** view or by hand.
 - **Required dependencies**: `npx` (via Node.js), `socat`, `jq`, `uv`. The launcher checks for these and exits loudly if any are missing; `scripts/install.sh` prints platform-specific install commands for missing deps.
-- **Starting**: The launcher (`scripts/fcc-launcher.sh`) opens the MCP Router tab automatically. To start manually: `bash scripts/mcp/start_mcp.sh`. Stop: `bash scripts/mcp/stop_mcp.sh`.
+- **Starting**: The launcher (`scripts/launcher.sh`) opens the MCP Router tab automatically. To start manually: `bash scripts/mcp/start_mcp.sh`. Stop: `bash scripts/mcp/stop_mcp.sh`.
 - **Admin panel**: The `/admin` UI has a dedicated **MCP Router** view where you can add, edit, and remove backends. Changes are written to `~/.fcc/mcp_config.json` with `chmod 600`; restart the MCP Router tab to apply.
 
 ## Star History
@@ -104,35 +104,19 @@ The MCP meta-router (`scripts/mcp/`) exposes multiple MCP servers through a sing
 
 ### 1. Install/Update The Proxy
 
-macOS/Linux:
-
 ```bash
 curl -fsSL "https://github.com/Gelvey/claude-unbound/blob/main/scripts/install.sh?raw=1" | sh
 ```
 
-Windows PowerShell:
-
-```powershell
-irm "https://github.com/Gelvey/claude-unbound/blob/main/scripts/install.ps1?raw=1" | iex
-```
-
-Review the installers at [scripts/install.sh](https://github.com/Gelvey/claude-unbound/blob/main/scripts/install.sh) and [scripts/install.ps1](https://github.com/Gelvey/claude-unbound/blob/main/scripts/install.ps1). They install Claude Code and Codex when missing, then install or update the proxy. Re-run these commands to update to the latest version.
+Review the installer at [scripts/install.sh](https://github.com/Gelvey/claude-unbound/blob/main/scripts/install.sh). It installs Claude Code and Codex when missing, then installs or updates the proxy. Re-run this command to update to the latest version.
 
 To remove only Claude Unbound (not uv, Claude Code, Codex, or the uv-managed Python runtime):
-
-macOS/Linux:
 
 ```bash
 curl -fsSL "https://raw.githubusercontent.com/Gelvey/claude-unbound/main/scripts/uninstall.sh" | sh
 ```
 
-Windows PowerShell:
-
-```powershell
-irm "https://raw.githubusercontent.com/Gelvey/claude-unbound/main/scripts/uninstall.ps1" | iex
-```
-
-Review [scripts/uninstall.sh](https://github.com/Gelvey/claude-unbound/blob/main/scripts/uninstall.sh) and [scripts/uninstall.ps1](https://github.com/Gelvey/claude-unbound/blob/main/scripts/uninstall.ps1). They remove the uv tool and always delete `~/.fcc/`. Stop any running `fcc-server`, `fcc-claude`, `fcc-codex`, `fcc-init`, or `free-claude-code` process before uninstalling.
+Review [scripts/uninstall.sh](https://github.com/Gelvey/claude-unbound/blob/main/scripts/uninstall.sh). It removes the uv tool and always deletes `~/.fcc/`. Stop any running `fcc-server`, `fcc-claude`, `fcc-codex`, `fcc-init`, or `free-claude-code` process before uninstalling.
 
 ### 2. Start The Proxy
 
@@ -467,7 +451,7 @@ Reload the extension. If the extension shows a login screen, choose the Anthropi
 
 ### 4. Codex in VS Code
 
-Install the [Codex extension](https://marketplace.visualstudio.com/items?itemName=openai.chatgpt). The extension shares the same user-level Codex config as the CLI (`~/.codex/config.toml` on macOS/Linux, `%USERPROFILE%\.codex\config.toml` on Windows).
+Install the [Codex extension](https://marketplace.visualstudio.com/items?itemName=openai.chatgpt). The extension shares the same user-level Codex config as the CLI (`~/.codex/config.toml`).
 
 Create or edit that file with the `fcc` provider pointing at your local proxy:
 
@@ -484,7 +468,7 @@ wire_api = "responses"
 
 Set `model` to your Admin UI `MODEL` value. Replace `8082` if your proxy uses a different `PORT`.
 
-Store the proxy auth token in `~/.codex/auth.json` (or the Windows equivalent):
+Store the proxy auth token in `~/.codex/auth.json`:
 
 ```json
 {
@@ -492,14 +476,11 @@ Store the proxy auth token in `~/.codex/auth.json` (or the Windows equivalent):
 }
 ```
 
-Use the same value as `ANTHROPIC_AUTH_TOKEN` in the Admin UI. Restart VS Code after changing these files. On Windows with WSL-backed Codex, edit the WSL `~/.codex/` files instead and enable `chatgpt.runCodexInWindowsSubsystemForLinux` in VS Code settings when needed.
+Use the same value as `ANTHROPIC_AUTH_TOKEN` in the Admin UI. Restart VS Code after changing these files.
 
 ### 5. Claude Code in JetBrains ACP
 
-Edit the installed Claude ACP config:
-
-- Windows: `C:\Users\%USERNAME%\AppData\Roaming\JetBrains\acp-agents\installed.json`
-- Linux/macOS: `~/.jetbrains/acp.json`
+Edit the installed Claude ACP config at `~/.jetbrains/acp.json`:
 
 Set the environment for `acp.registry.claude-acp`:
 
@@ -559,8 +540,6 @@ The bot wrapper runs Claude Code sessions remotely, streams progress, supports r
 
 Voice notes work on Discord and Telegram after you extend your [Claude Unbound install](#1-fast-install) with the matching optional extras.
 
-macOS/Linux:
-
 ```bash
 # NVIDIA NIM transcription (Riva gRPC)
 curl -fsSL "https://github.com/Gelvey/claude-unbound/blob/main/scripts/install.sh?raw=1" | sh -s -- --voice-nim
@@ -573,22 +552,6 @@ curl -fsSL "https://github.com/Gelvey/claude-unbound/blob/main/scripts/install.s
 
 # Local Whisper with CUDA
 curl -fsSL "https://github.com/Gelvey/claude-unbound/blob/main/scripts/install.sh?raw=1" | sh -s -- --voice-local --torch-backend cu130
-```
-
-Windows PowerShell:
-
-```powershell
-# NVIDIA NIM transcription (Riva gRPC)
-& ([scriptblock]::Create((irm "https://github.com/Gelvey/claude-unbound/blob/main/scripts/install.ps1?raw=1"))) -VoiceNim
-
-# Local Whisper (CPU or CUDA)
-& ([scriptblock]::Create((irm "https://github.com/Gelvey/claude-unbound/blob/main/scripts/install.ps1?raw=1"))) -VoiceLocal
-
-# Both backends
-& ([scriptblock]::Create((irm "https://github.com/Gelvey/claude-unbound/blob/main/scripts/install.ps1?raw=1"))) -VoiceAll
-
-# Local Whisper with CUDA
-& ([scriptblock]::Create((irm "https://github.com/Gelvey/claude-unbound/blob/main/scripts/install.ps1?raw=1"))) -VoiceLocal -TorchBackend cu130
 ```
 
 Restart `fcc-server` after reinstalling.
@@ -650,11 +613,7 @@ Run all GitHub CI checks locally (requires `uv` on PATH):
 ./scripts/ci.sh
 ```
 
-```powershell
-.\scripts\ci.ps1
-```
-
-Useful flags: `--only pytest`, `--skip pytest`, `--dry-run` (PowerShell: `-Only pytest`, `-Skip pytest`, `-DryRun`).
+Useful flags: `--only pytest`, `--skip pytest`, `--dry-run`.
 
 Or run individual checks manually:
 
@@ -665,7 +624,7 @@ uv run ty check
 uv run pytest -v --tb=short
 ```
 
-CI also enforces a ban on `# type: ignore` / `# ty: ignore` suppressions; `scripts/ci.sh` and `scripts/ci.ps1` run that grep too.
+CI also enforces a ban on `# type: ignore` / `# ty: ignore` suppressions; `scripts/ci.sh` runs that grep too.
 
 ### 4. Package Scripts
 
