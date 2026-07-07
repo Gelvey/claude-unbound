@@ -1,0 +1,26 @@
+__pycache__
+.claude
+.cursor
+.pytest_cache
+.ruff_cache
+.serena
+.venv
+agent_workspace
+.env
+/logs/
+server.log
+/server.*.log
+debug-*.log
+.coverage
+llama_cache
+.smoke-results
+.vscode
+
+# MCP router — real config holds secrets; only the example template is tracked
+scripts/mcp/mcp_config.json
+scripts/mcp/.venv/
+scripts/mcp/__pycache__/
+scripts/mcp/*.pyc
+
+# Managed FCC config directory (never part of the repo)
+.fcc/

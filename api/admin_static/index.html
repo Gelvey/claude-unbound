@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Claude Unbound Admin</title>
+    <link rel="icon" type="image/svg+xml" href="/admin/assets/favicon.svg" />
+    <link rel="stylesheet" href="/admin/assets/admin.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="32" height="32">
+              <title>Claude Unbound</title>
+              <g fill="#5B8DEF">
+                <rect x="28" y="4" width="8" height="56" rx="4" ry="4" />
+                <rect x="28" y="4" width="8" height="56" rx="4" ry="4" transform="rotate(45 32 32)" />
+                <rect x="28" y="4" width="8" height="56" rx="4" ry="4" transform="rotate(90 32 32)" />
+                <rect x="28" y="4" width="8" height="56" rx="4" ry="4" transform="rotate(135 32 32)" />
+                <rect x="28" y="4" width="8" height="56" rx="4" ry="4" transform="rotate(180 32 32)" />
+                <rect x="28" y="4" width="8" height="56" rx="4" ry="4" transform="rotate(225 32 32)" />
+                <rect x="28" y="4" width="8" height="56" rx="4" ry="4" transform="rotate(270 32 32)" />
+                <rect x="28" y="4" width="8" height="56" rx="4" ry="4" transform="rotate(315 32 32)" />
+              </g>
+            </svg>
+          </div>
+          <div>
+            <h1>Claude Unbound</h1>
+            <p>Server Control</p>
+          </div>
+        </div>
+        <nav id="sectionNav" class="section-nav" aria-label="Admin views"></nav>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div>
+            <h2 id="pageTitle">Providers</h2>
+          </div>
+        </header>
+
+        <div id="adminViews" class="admin-views">
+          <section id="view-providers" class="admin-view active" data-view="providers">
+            <section class="provider-strip" aria-label="Provider status">
+              <div class="strip-header">
+                <h3>Providers</h3>
+              </div>
+              <div id="providerGrid" class="provider-grid"></div>
+            </section>
+            <div
+              id="providersSections"
+              class="form-sections"
+              aria-label="Provider configuration"
+            ></div>
+          </section>
+
+          <section id="view-model_config" class="admin-view" data-view="model_config" hidden>
+            <div
+              id="modelConfigSections"
+              class="form-sections"
+              aria-label="Model configuration"
+            ></div>
+          </section>
+
+          <section id="view-messaging" class="admin-view" data-view="messaging" hidden>
+            <div
+              id="messagingSections"
+              class="form-sections"
+              aria-label="Messaging configuration"
+            ></div>
+          </section>
+
+          <section
+            id="view-openrouter_policy"
+            class="admin-view"
+            data-view="openrouter_policy"
+            hidden
+          >
+            <div
+              id="openrouterPolicySections"
+              class="form-sections"
+              aria-label="OpenRouter policy configuration"
+            ></div>
+          </section>
+
+          <section
+            id="view-cloudflare"
+            class="admin-view"
+            data-view="cloudflare"
+            hidden
+          >
+            <div
+              id="cloudflareSections"
+              class="form-sections"
+              aria-label="Cloudflare Workers AI configuration"
+            ></div>
+          </section>
+
+          <section
+            id="view-mcp"
+            class="admin-view"
+            data-view="mcp"
+            hidden
+          >
+            <div
+              id="mcpSections"
+              class="form-sections"
+              aria-label="MCP Router configuration"
+            ></div>
+          </section>
+
+          <section
+            id="view-freebuff"
+            class="admin-view"
+            data-view="freebuff"
+            hidden
+          >
+            <div
+              id="freebuffSections"
+              class="form-sections"
+              aria-label="Freebuff2API configuration"
+            ></div>
+          </section>
+
+          <section
+            id="view-diagnostics"
+            class="admin-view"
+            data-view="diagnostics"
+            hidden
+          >
+            <div
+              id="diagnosticsSections"
+              class="form-sections"
+              aria-label="Diagnostics and smoke test configuration"
+            ></div>
+          </section>
+        </div>
+      </main>
+
+      <footer class="action-bar">
+        <div class="action-meta">
+          <strong id="dirtyState">No changes</strong>
+          <span id="configPath"></span>
+        </div>
+        <div id="messageArea" class="message-area"></div>
+        <div class="action-buttons">
+          <button id="validateButton" class="secondary-button" type="button">Validate</button>
+          <button id="applyButton" class="primary-button" type="button" disabled title="Save all settings to the env file">Apply</button>
+        </div>
+        <div class="action-hint">Saves all settings to the env file, including defaults</div>
+      </footer>
+    </div>
+    <script src="/admin/assets/admin.js"></script>
+  </body>
+</html>

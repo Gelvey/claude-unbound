@@ -1,0 +1,271 @@
+import os
+import subprocess
+from pathlib import Path
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _script_text() -> str:
+    return (_repo_root() / "scripts" / "fcc-launcher.sh").read_text(encoding="utf-8")
+
+
+def _braced_body(text: str, declaration: str) -> str:
+    """Extract the braced body of a shell function."""
+    start = text.index(declaration)
+    brace_start = text.index("{", start)
+    depth = 0
+
+    for index, char in enumerate(text[brace_start:], start=brace_start):
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[brace_start + 1 : index]
+
+    raise AssertionError(f"Unclosed function body for {declaration}")
+
+
+def _run_launcher(*env_overrides: str) -> subprocess.CompletedProcess[str]:
+    """Run fcc-launcher.sh and return the result.
+
+    Strips kitty/fcc-* from PATH so the script exits early (no real launch).
+    """
+    sh = _repo_root() / "scripts" / "fcc-launcher.sh"
+    # Build a minimal PATH that excludes kitty and fcc-* binaries.
+    minimal_path = "/usr/bin:/bin"
+    env = {**os.environ, "PATH": minimal_path}
+    for override in env_overrides:
+        if "=" in override:
+            key, val = override.split("=", 1)
+            env[key] = val
+    return subprocess.run(
+        ["bash", str(sh)],
+        cwd=_repo_root(),
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+# ── Static content / structure checks ──────────────────────────────────────
+
+
+def test_launcher_sh_is_valid_bash() -> None:
+    """fcc-launcher.sh passes bash -n syntax check."""
+    script = _repo_root() / "scripts" / "fcc-launcher.sh"
+    result = subprocess.run(
+        ["bash", "-n", str(script)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_launcher_sh_uses_home_not_hardcoded_path() -> None:
+    """REPO_DIR uses $HOME, not /home/$USER."""
+    text = _script_text()
+    assert 'REPO_DIR="$HOME/claude-unbound"' in text
+    assert 'REPO_DIR="/home/' not in text
+
+
+def test_launcher_sh_has_portable_notify_function() -> None:
+    """notify() function handles notify-send, osascript, and echo fallback."""
+    text = _script_text()
+    body = _braced_body(text, "notify()")
+
+    assert "notify-send" in body
+    assert "osascript" in body
+    assert "display notification" in body
+    assert "echo" in body  # fallback
+
+
+def test_launcher_sh_has_portable_activate_window_function() -> None:
+    """activate_window() handles wmctrl, xdotool, and osascript."""
+    text = _script_text()
+    body = _braced_body(text, "activate_window()")
+
+    assert "wmctrl" in body
+    assert "xdotool" in body
+    assert "osascript" in body
+    assert 'tell application \\"kitty\\" to activate' in body
+
+
+def test_launcher_sh_checks_core_dependencies() -> None:
+    """Script checks for kitty, fcc-server, fcc-claude, and git."""
+    text = _script_text()
+    assert "kitty" in text
+    assert "fcc-server" in text
+    assert "fcc-claude" in text
+    assert "git" in text
+
+
+def test_launcher_sh_checks_mcp_dependencies() -> None:
+    """Script checks for npx, socat, jq, uv when MCP script exists."""
+    text = _script_text()
+    assert "npx" in text
+    assert "socat" in text
+    assert "jq" in text
+    # uv is checked both in MCP deps and general PATH
+    assert text.count("uv") >= 2
+
+
+def test_launcher_sh_ensures_mcp_config_exists() -> None:
+    """Script creates ~/.fcc/mcp_config.json from example on first run."""
+    text = _script_text()
+    assert "~/.fcc/mcp_config.json" in text
+    assert "mcp_config.example.json" in text
+    assert "created" in text
+    assert "edit with real secrets" in text
+    # Should NOT have the old restore-from-backup logic
+    assert "Restored mcp_config.json from backup" not in text
+
+
+def test_launcher_sh_kitty_listen_on_socket() -> None:
+    """Script launches kitty with --listen-on unix socket."""
+    text = _script_text()
+    assert "--listen-on" in text
+    assert "unix:" in text
+    assert "--override" in text
+    assert "allow_remote_control=socket-only" in text
+
+
+def test_launcher_sh_spawns_three_tabs() -> None:
+    """Script mentions all 3 tabs: MCP Router, Server, Claude Unbound CLI."""
+    text = _script_text()
+    assert "MCP Router" in text
+    assert "Server" in text
+    assert "Claude Unbound CLI" in text
+    # Tab counting logic
+    assert "TABS_OPENED" in text
+
+
+def test_launcher_sh_warmup_for_fcc_server() -> None:
+    """Claude Unbound CLI tab waits for fcc-server before launching fcc-claude."""
+    text = _script_text()
+    assert "FCC_CLIENT_WARMUP_S" in text
+    assert "waiting" in text.lower() and "fcc-server" in text.lower()
+
+
+def test_launcher_sh_fetches_remote_before_launch() -> None:
+    """Script fetches origin and shows commits before launching."""
+    text = _script_text()
+    assert "git fetch origin" in text
+    assert "git log" in text
+
+
+def test_launcher_sh_prompts_for_force_pull() -> None:
+    """Script asks user whether to force-pull claude-unbound."""
+    text = _script_text()
+    assert "Pull latest state of claude-unbound" in text
+    assert "read -r REPLY" in text
+
+
+def test_launcher_sh_force_pull_on_confirm() -> None:
+    """Script does git reset --hard when user confirms with y."""
+    text = _script_text()
+    assert "git reset --hard" in text
+    assert 'REPLY" = "y"' in text
+
+
+def test_launcher_sh_warns_about_discarding_changes() -> None:
+    """Script warns user that force-pull discards local changes."""
+    text = _script_text()
+    assert "DISCARD" in text or "discard" in text.lower()
+
+
+def test_launcher_sh_skips_pull_on_reject() -> None:
+    """Script skips pull when user does not confirm."""
+    text = _script_text()
+    assert "Skipping pull" in text
+
+
+def test_launcher_sh_fork_url_configurable() -> None:
+    """FORK_URL can be overridden via FCC_FORK_URL env var."""
+    text = _script_text()
+    assert "FCC_FORK_URL" in text
+    assert "Gelvey/claude-unbound" in text
+
+
+# ── Runtime exit-behaviour tests ───────────────────────────────────────────
+
+
+def test_launcher_sh_exits_when_kitty_missing() -> None:
+    """Script exits with non-zero when kitty is not on PATH.
+
+    The error message may go through notify-send or osascript depending on
+    what's available; in headless CI those commands silently swallow output,
+    so we only check exit code, not text content.
+    """
+    result = _run_launcher()
+    assert result.returncode != 0, (
+        f"Expected non-zero exit when kitty missing, got {result.returncode}\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+
+
+def test_launcher_sh_clones_repo_when_missing() -> None:
+    """Script attempts git clone when REPO_DIR does not exist."""
+    # This is a static check: verify the clone logic exists.
+    text = _script_text()
+    assert "git clone" in text
+    assert "REPO_DIR" in text
+    assert 'if [ ! -d "$REPO_DIR" ]' in text
+
+
+def test_start_mcp_expand_path_produces_correct_absolute_paths(
+    tmp_path,
+) -> None:
+    """start_mcp.sh's expand_path() converts ~/... to $HOME/... correctly.
+
+    Extracts the function from the script into a temp file, sources it, and
+    asserts the three canonical input forms all produce correct output.
+    """
+    script_text = (_repo_root() / "scripts" / "mcp" / "start_mcp.sh").read_text(
+        encoding="utf-8"
+    )
+    # Extract the expand_path function (from the function declaration through
+    # the closing brace).
+    start = script_text.index("expand_path() {\n")
+    brace_start = script_text.index("{", start)
+    depth = 0
+    end = brace_start
+    for index, char in enumerate(script_text[brace_start:], start=brace_start):
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                end = index + 1
+                break
+    func_text = script_text[start:end]
+
+    # Write the function to a temp script and source + call it.
+    wrapper = tmp_path / "test_expand.sh"
+    wrapper.write_text(
+        func_text
+        + '\nexpand_path "~/.x"\n'
+        + "echo\n"
+        + 'expand_path "$HOME/.x"\n'
+        + "echo\n"
+        + 'expand_path "/abs/.x"\n',
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        ["bash", str(wrapper)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, (
+        f"expand_path failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+    lines = [line for line in result.stdout.strip().split("\n") if line]
+    home = os.path.expanduser("~")
+    assert lines[0] == f"{home}/.x", f"~/... expansion failed: {lines[0]!r}"
+    assert lines[1] == f"{home}/.x", f"$HOME/... expansion failed: {lines[1]!r}"
+    assert lines[2] == "/abs/.x", f"/abs/... passthrough failed: {lines[2]!r}"
