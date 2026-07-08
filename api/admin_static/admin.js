@@ -1181,6 +1181,7 @@ function showSftpMessage(section, message, kind) {
 function renderComposioSection(config, liveMap, container) {
   const composio = config.servers && config.servers.composio;
   const composioLive = liveMap.composio;
+  const composioShared = _findComposioShared(config);
   const section = document.createElement("section");
   section.className = "settings-section composio-section";
 
@@ -1190,6 +1191,13 @@ function renderComposioSection(config, liveMap, container) {
     heading.className = "section-heading";
     heading.innerHTML = `<div><h3>Composio</h3><p>Connect to Composio's MCP marketplace to access hundreds of tools (GitHub, Slack, Stripe, Notion, and more). <a href="https://composio.dev" target="_blank" rel="noopener">Get an API key</a></p></div>`;
     section.appendChild(heading);
+
+    if (composioShared) {
+      const note = document.createElement("div");
+      note.className = "composio-shared-note";
+      note.textContent = `Also configured as a shared server: "${composioShared}". Manage it from the Shared Servers section.`;
+      section.appendChild(note);
+    }
 
     const card = document.createElement("div");
     card.className = "composio-setup-card";
@@ -1201,7 +1209,6 @@ function renderComposioSection(config, liveMap, container) {
     const keyInput = document.createElement("input");
     keyInput.type = "password";
     keyInput.placeholder = "Enter your Composio API key";
-    keyInput.id = "composioApiKeyInput";
     keyField.append(keyLabel, keyInput);
     card.appendChild(keyField);
 
@@ -1216,6 +1223,7 @@ function renderComposioSection(config, liveMap, container) {
       const apiKey = keyInput.value.trim();
       if (!apiKey) {
         showMessage("Please enter your Composio API key", "error");
+        keyInput.focus();
         return;
       }
       connectBtn.disabled = true;
@@ -1227,6 +1235,7 @@ function renderComposioSection(config, liveMap, container) {
         });
         if (result.applied) {
           showMessage("Composio connected successfully", "ok");
+          keyInput.value = "";
           await loadMcpView();
         } else {
           showMessage(result.errors ? result.errors.join("; ") : "Setup failed", "error");
@@ -1248,6 +1257,13 @@ function renderComposioSection(config, liveMap, container) {
     heading.className = "section-heading";
     heading.innerHTML = `<div><h3>Composio</h3><p>Connected to Composio MCP marketplace. <a href="https://composio.dev" target="_blank" rel="noopener">composio.dev</a></p></div>`;
     section.appendChild(heading);
+
+    if (composioShared) {
+      const note = document.createElement("div");
+      note.className = "composio-shared-note";
+      note.textContent = `Also configured as a shared server: "${composioShared}". Manage it from the Shared Servers section.`;
+      section.appendChild(note);
+    }
 
     const card = document.createElement("div");
     card.className = "composio-status-card";
@@ -1288,6 +1304,12 @@ function renderComposioSection(config, liveMap, container) {
     keyField.append(keyLabel, keyInput);
     card.appendChild(keyField);
 
+    const hint = document.createElement("div");
+    hint.className = "field-hint";
+    hint.textContent =
+      "Leave the field empty and click Test Connection to verify the currently saved key.";
+    card.appendChild(hint);
+
     // Action buttons
     const actions = document.createElement("div");
     actions.className = "mcp-action-row";
@@ -1307,7 +1329,11 @@ function renderComposioSection(config, liveMap, container) {
           body: JSON.stringify(body),
         });
         if (result.ok) {
-          showMessage(`Composio OK: ${result.tool_count} tools available`, "ok");
+          const suffix = apiKey ? "new key" : "current key";
+          showMessage(
+            `Composio OK (${suffix}): ${result.tool_count} tools available`,
+            "ok",
+          );
         } else {
           showMessage(`Composio test failed: ${result.error}`, "error");
         }
@@ -1327,6 +1353,7 @@ function renderComposioSection(config, liveMap, container) {
       const apiKey = keyInput.value.trim();
       if (!apiKey) {
         showMessage("Enter a new API key to update", "error");
+        keyInput.focus();
         return;
       }
       updateBtn.disabled = true;
@@ -1353,11 +1380,11 @@ function renderComposioSection(config, liveMap, container) {
 
     const removeBtn = document.createElement("button");
     removeBtn.type = "button";
-    removeBtn.className = "ghost-button";
+    removeBtn.className = "ghost-button composio-remove-btn";
     removeBtn.textContent = "Remove";
-    removeBtn.addEventListener("click", async () => {
+    _wireComposioRemove(removeBtn, () => {
       delete config.servers.composio;
-      await saveMcpConfig();
+      return saveMcpConfig();
     });
 
     actions.append(testBtn, updateBtn, removeBtn);
@@ -1366,6 +1393,54 @@ function renderComposioSection(config, liveMap, container) {
   }
 
   container.appendChild(section);
+}
+
+// Detect a Composio entry in shared_servers by name or by URL convention.
+function _findComposioShared(config) {
+  const shared = (config && config.shared_servers) || {};
+  for (const [name, srv] of Object.entries(shared)) {
+    if (name === "composio-shared") return name;
+    if (srv && typeof srv.url === "string" && srv.url.includes("composio.dev")) {
+      return name;
+    }
+  }
+  return null;
+}
+
+// Two-step confirm: first click arms the button, second click commits.
+function _wireComposioRemove(button, onConfirm) {
+  let armed = false;
+  let resetTimer = null;
+  let originalLabel = button.textContent;
+
+  function reset() {
+    armed = false;
+    button.textContent = originalLabel;
+    button.classList.remove("armed");
+    if (resetTimer) {
+      clearTimeout(resetTimer);
+      resetTimer = null;
+    }
+  }
+
+  button.addEventListener("click", async () => {
+    if (!armed) {
+      armed = true;
+      button.textContent = "Confirm Remove?";
+      button.classList.add("armed");
+      // Auto-disarm after 4s so an abandoned click doesn't linger.
+      resetTimer = setTimeout(reset, 4000);
+      return;
+    }
+    button.disabled = true;
+    button.textContent = "Removing...";
+    try {
+      await onConfirm();
+    } finally {
+      button.disabled = false;
+      reset();
+    }
+  });
 }
 
 function showMcpEditForm(name, srv, isShared) {
@@ -1436,7 +1511,6 @@ function showMcpEditForm(name, srv, isShared) {
   urlHint.className = "field-hint";
   urlHint.textContent = "For Composio: https://connect.composio.dev/mcp";
   urlHint.dataset.showFor = "http";
-  urlField.appendChild(urlHint);
 
   // Headers (http) - key=value rows
   const headersField = document.createElement("div");
@@ -1462,7 +1536,7 @@ function showMcpEditForm(name, srv, isShared) {
   headersField.appendChild(headersRows);
   headersField.appendChild(addHeaderBtn);
 
-  form.append(nameField, typeField, portField, commandField, argsField, envField, urlField, headersField);
+  form.append(nameField, typeField, portField, commandField, argsField, envField, urlField, urlHint, headersField);
 
   // Toggle visibility based on type
   function updateFieldVisibility() {
@@ -1472,6 +1546,7 @@ function showMcpEditForm(name, srv, isShared) {
     });
     urlField.style.display =
       selectedType === "sse" || selectedType === "http" ? "" : "none";
+    urlHint.style.display = selectedType === "http" ? "" : "none";
     headersField.style.display = selectedType === "http" ? "" : "none";
   }
   typeSelect.addEventListener("change", updateFieldVisibility);

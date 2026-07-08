@@ -750,7 +750,8 @@ textarea:focus-visible {
   margin-top: 12px;
 }
 
-.composio-setup-card .field {
+.composio-setup-card .field,
+.composio-status-card .field {
   max-width: 400px;
   margin-bottom: 16px;
 }
@@ -770,13 +771,25 @@ textarea:focus-visible {
   overflow-y: auto;
 }
 
-.composio-status-card .field {
-  max-width: 400px;
-  margin-bottom: 16px;
+.composio-shared-note {
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--bg-2, transparent);
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin: 10px 0 0;
+}
+
+.composio-remove-btn.armed {
+  background: var(--danger, #c0392b);
+  border-color: var(--danger, #c0392b);
+  color: #fff;
 }
 
 .field-hint {
   font-size: 12px;
   color: var(--muted);
   margin-top: 4px;
+  margin-bottom: 12px;
 }

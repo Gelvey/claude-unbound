@@ -795,6 +795,7 @@ async def sftp_import(payload: SftpImportPayload, request: Request):
 COMPOSIO_DEFAULT_URL = "https://connect.composio.dev/mcp"
 COMPOSIO_DEFAULT_PORT = 7110
 COMPOSIO_API_KEY_HEADER = "x-consumer-api-key"
+COMPOSIO_TEST_TIMEOUT_S = 15.0
 
 
 class ComposioTestPayload(BaseModel):
@@ -810,6 +811,58 @@ class ComposioSetupPayload(BaseModel):
     port: int = Field(default=COMPOSIO_DEFAULT_PORT, ge=1, le=65535)
 
 
+def _lookup_composio_api_key(headers: dict[str, str]) -> str:
+    """Return the configured Composio API key, matching the header by HTTP-case.
+
+    HTTP header names are case-insensitive, but Python dicts are not. Allow
+    users to write ``X-Consumer-Api-Key`` and have it recognized.
+    """
+    target = COMPOSIO_API_KEY_HEADER.lower()
+    for key, value in headers.items():
+        if key.lower() == target:
+            return value
+    return ""
+
+
+def _build_composio_entry(
+    api_key: str,
+    port: int = COMPOSIO_DEFAULT_PORT,
+    existing_headers: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Construct a ``composio`` MCP backend config entry.
+
+    Preserves any custom headers already present (other than the API key
+    itself), so updating the key never wipes user customisations.
+    """
+    headers = {
+        k: v
+        for k, v in (existing_headers or {}).items()
+        if k.lower() != COMPOSIO_API_KEY_HEADER.lower()
+    }
+    headers[COMPOSIO_API_KEY_HEADER] = api_key
+    return {
+        "type": "http",
+        "url": COMPOSIO_DEFAULT_URL,
+        "port": port,
+        "headers": headers,
+    }
+
+
+def _sanitize_composio_error(api_key: str, message: str) -> str:
+    """Redact the API key from a Composio error message before returning it.
+
+    Prevents leaking the provisioned key if an upstream library echoes it
+    back in its exception text (e.g. via URL-encoded HTTP headers).
+    """
+    if not api_key or not message:
+        return message
+    redacted = message.replace(api_key, "[REDACTED]")
+    if redacted == message and api_key in message:
+        # Substring variant (e.g. URL-encoded) - redact each segment.
+        return message.replace(api_key, "[REDACTED]")
+    return redacted
+
+
 async def _test_composio_connection(api_key: str) -> dict:
     """Test connectivity to Composio's MCP endpoint.
 
@@ -823,7 +876,9 @@ async def _test_composio_connection(api_key: str) -> dict:
     async with (
         streamable_http_client(
             COMPOSIO_DEFAULT_URL,
-            http_client=httpx.AsyncClient(headers=headers),
+            http_client=httpx.AsyncClient(
+                headers=headers, timeout=COMPOSIO_TEST_TIMEOUT_S
+            ),
         ) as (read_stream, write_stream, _get_session_id),
         ClientSession(read_stream, write_stream) as session,
     ):
@@ -842,7 +897,8 @@ async def composio_test_connection(payload: ComposioTestPayload, request: Reques
     """Test connectivity to Composio's MCP endpoint.
 
     Uses the provided API key or falls back to the configured ``composio``
-    backend's ``x-consumer-api-key`` header.
+    backend's ``x-consumer-api-key`` header. Header lookup is
+    case-insensitive.
     """
     require_loopback_admin(request)
 
@@ -856,14 +912,14 @@ async def composio_test_connection(payload: ComposioTestPayload, request: Reques
                 "ok": False,
                 "error": "No Composio backend configured and no API key provided",
             }
-        api_key = composio.headers.get(COMPOSIO_API_KEY_HEADER, "")
+        api_key = _lookup_composio_api_key(composio.headers)
         if not api_key:
             return {"ok": False, "error": "Composio backend has no API key configured"}
 
     try:
         return await _test_composio_connection(api_key)
     except Exception as exc:
-        return {"ok": False, "error": str(exc)}
+        return {"ok": False, "error": _sanitize_composio_error(api_key, str(exc))}
 
 
 @router.post("/admin/api/mcp/composio/setup")
@@ -871,6 +927,8 @@ async def composio_setup(payload: ComposioSetupPayload, request: Request):
     """Create or update the ``composio`` MCP backend entry.
 
     Pre-fills URL, API key header, and port.  Validates and writes config.
+    Existing custom headers (other than the API key itself) are preserved
+    across updates so user customisations are not wiped.
     """
     require_loopback_admin(request)
 
@@ -887,15 +945,12 @@ async def composio_setup(payload: ComposioSetupPayload, request: Request):
         for name, srv in config.shared_servers.items()
     }
 
-    # Build the composio entry
-    composio_entry = {
-        "type": "http",
-        "url": COMPOSIO_DEFAULT_URL,
-        "port": payload.port,
-        "headers": {COMPOSIO_API_KEY_HEADER: api_key},
-    }
-
-    servers["composio"] = composio_entry
+    existing_headers = servers.get("composio", {}).get("headers") or {}
+    servers["composio"] = _build_composio_entry(
+        api_key=api_key,
+        port=payload.port,
+        existing_headers=existing_headers,
+    )
 
     result = write_mcp_config(
         router_socket=config.router_socket,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import cast
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -745,3 +746,250 @@ def test_composio_test_loopback_only(monkeypatch, tmp_path):
         json={"api_key": "test"},
     )
     assert response.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# Composio hardening: timeout, header preservation, error sanitization
+# ---------------------------------------------------------------------------
+
+
+def test_composio_setup_preserves_custom_headers_on_update(monkeypatch, tmp_path):
+    """Updating the API key must not wipe user-added custom headers."""
+    _set_home(monkeypatch, tmp_path)
+    config_file = tmp_path / ".fcc" / "mcp_config.json"
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text(
+        json.dumps(
+            {
+                "router_socket": "~/.mcp-router/sockets/router.sock",
+                "router_pidfile": "~/.mcp-router/run/router.pid",
+                "router_log": "~/.mcp-router/logs/router.log",
+                "health_timeout_s": 30,
+                "servers": {
+                    "composio": {
+                        "type": "http",
+                        "url": "https://connect.composio.dev/mcp",
+                        "port": 7110,
+                        "headers": {
+                            "x-consumer-api-key": "old_key",
+                            "x-composio-user-id": "user_abc",
+                            "X-Trace-Id": "abc-123",
+                        },
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    app = create_app(lifespan_enabled=False)
+
+    response = _local_client(app).post(
+        "/admin/api/mcp/composio/setup",
+        json={"api_key": "new_key"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["applied"] is True
+
+    saved = json.loads(config_file.read_text())
+    headers = saved["servers"]["composio"]["headers"]
+    assert headers["x-consumer-api-key"] == "new_key"
+    # Custom headers must be preserved across the API key update.
+    assert headers["x-composio-user-id"] == "user_abc"
+    assert headers["X-Trace-Id"] == "abc-123"
+
+
+def test_composio_test_falls_back_to_uppercase_header(monkeypatch, tmp_path):
+    """Header lookup is case-insensitive: HTTP headers are not case-sensitive."""
+    _set_home(monkeypatch, tmp_path)
+    config_file = tmp_path / ".fcc" / "mcp_config.json"
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text(
+        json.dumps(
+            {
+                "router_socket": "~/.mcp-router/sockets/router.sock",
+                "router_pidfile": "~/.mcp-router/run/router.pid",
+                "router_log": "~/.mcp-router/logs/router.log",
+                "health_timeout_s": 30,
+                "servers": {
+                    "composio": {
+                        "type": "http",
+                        "url": "https://connect.composio.dev/mcp",
+                        "port": 7110,
+                        "headers": {"X-Consumer-Api-Key": "uppercase_key"},
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    app = create_app(lifespan_enabled=False)
+
+    captured: dict[str, str] = {}
+
+    async def mock_test_connection(api_key: str):
+        captured["api_key"] = api_key
+        return {"ok": True, "tool_count": 0, "tool_names": []}
+
+    with patch("api.admin_routes._test_composio_connection", mock_test_connection):
+        response = _local_client(app).post(
+            "/admin/api/mcp/composio/test",
+            json={},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert captured["api_key"] == "uppercase_key"
+
+
+def test_composio_test_redacts_key_from_error(monkeypatch, tmp_path):
+    """If a downstream exception echoes the API key back, it must be redacted."""
+    _set_home(monkeypatch, tmp_path)
+    _seed_config(tmp_path)
+    app = create_app(lifespan_enabled=False)
+    secret = "leaky_secret_token"
+
+    async def mock_test_connection(api_key: str):
+        raise RuntimeError(f"HTTP error for token {secret}: invalid")
+
+    with patch("api.admin_routes._test_composio_connection", mock_test_connection):
+        response = _local_client(app).post(
+            "/admin/api/mcp/composio/test",
+            json={"api_key": secret},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert secret not in body["error"]
+    assert "[REDACTED]" in body["error"]
+
+
+def test_composio_test_uses_httpx_timeout(monkeypatch):
+    """_test_composio_connection must apply a non-None httpx timeout.
+
+    Regression test: previously the helper constructed ``httpx.AsyncClient``
+    without a timeout, which could hang indefinitely if the Composio server
+    stalled. We stub the optional ``mcp`` imports (not installed in the
+    runtime venv) so we can call into the real coroutine and inspect the
+    kwargs httpx.AsyncClient received.
+    """
+    import asyncio
+    import sys
+    import types
+    from typing import Any
+
+    # Stub the optional MCP modules that _test_composio_connection imports.
+    fake_mcp: Any = types.ModuleType("mcp")
+
+    class _FakeSession:
+        def __init__(self, *args, **kwargs):
+            # Accept whatever ClientSession is invoked with.
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def initialize(self):
+            return None
+
+        async def list_tools(self):
+            from types import SimpleNamespace
+
+            return SimpleNamespace(tools=[])
+
+    fake_mcp.ClientSession = _FakeSession
+    fake_streamable: Any = types.ModuleType("mcp.client.streamable_http")
+
+    class _FakeStream:
+        def __init__(self, *args, **kwargs):
+            # Accept whatever streamable_http_client is invoked with.
+            pass
+
+        async def __aenter__(self):
+            return (object(), object(), lambda: None)
+
+        async def __aexit__(self, *exc):
+            return False
+
+    fake_streamable.streamable_http_client = _FakeStream
+    fake_client_pkg: Any = types.ModuleType("mcp.client")
+    fake_client_pkg.streamable_http = fake_streamable
+    monkeypatch.setitem(sys.modules, "mcp", fake_mcp)
+    monkeypatch.setitem(sys.modules, "mcp.client", fake_client_pkg)
+    monkeypatch.setitem(sys.modules, "mcp.client.streamable_http", fake_streamable)
+
+    # Intercept the AsyncClient constructor used by admin_routes.
+    from api import admin_routes
+
+    captured: dict[str, object] = {}
+
+    class _FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            captured.update(kwargs)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(admin_routes.httpx, "AsyncClient", _FakeAsyncClient)
+    result = asyncio.run(admin_routes._test_composio_connection("k"))
+
+    timeout_value: object = captured.get("timeout")
+    assert timeout_value is not None, "AsyncClient must receive a timeout"
+    assert timeout_value == admin_routes.COMPOSIO_TEST_TIMEOUT_S
+    # headers_kwarg is constructed by admin_routes as a dict[str, str].
+    headers_kwarg = cast("dict[str, str]", captured["headers"])
+    assert headers_kwarg.get("x-consumer-api-key") == "k"
+    assert result["ok"] is True
+
+
+def test_composio_helpers_unit():
+    """Direct unit tests for the small helpers introduced for Composio."""
+    from api.admin_routes import (
+        COMPOSIO_API_KEY_HEADER,
+        COMPOSIO_DEFAULT_URL,
+        _build_composio_entry,
+        _lookup_composio_api_key,
+        _sanitize_composio_error,
+    )
+
+    entry = _build_composio_entry(api_key="abc", port=7110)
+    assert entry["type"] == "http"
+    assert entry["url"] == COMPOSIO_DEFAULT_URL
+    assert entry["port"] == 7110
+    assert entry["headers"][COMPOSIO_API_KEY_HEADER] == "abc"
+
+    # Update preserves custom headers; only the API key changes.
+    entry2 = _build_composio_entry(
+        api_key="xyz",
+        existing_headers={
+            COMPOSIO_API_KEY_HEADER: "abc",
+            "x-composio-user-id": "u1",
+            "X-Trace-Id": "tr-1",
+        },
+    )
+    headers = entry2["headers"]
+    assert headers[COMPOSIO_API_KEY_HEADER] == "xyz"
+    assert headers["x-composio-user-id"] == "u1"
+    assert headers["X-Trace-Id"] == "tr-1"
+
+    # Case-insensitive lookup matches HTTP convention.
+    assert _lookup_composio_api_key({"X-Consumer-Api-Key": "upper_key"}) == "upper_key"
+    assert _lookup_composio_api_key({"x-consumer-api-key": "lower_key"}) == "lower_key"
+    assert (
+        _lookup_composio_api_key({"X-CONSUMER-API-KEY": "shouty_key"}) == "shouty_key"
+    )
+    assert _lookup_composio_api_key({"unrelated": "v"}) == ""
+
+    # Error sanitization: scrub the API key from downstream error texts.
+    assert _sanitize_composio_error("secret", "msg without it") == "msg without it"
+    assert _sanitize_composio_error("secret", "msg with secret inside") == (
+        "msg with [REDACTED] inside"
+    )
+    assert _sanitize_composio_error("", "untouched") == "untouched"
