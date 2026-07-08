@@ -786,3 +786,123 @@ async def sftp_import(payload: SftpImportPayload, request: Request):
     result_data["ok"] = result.applied
     result_data["imported_count"] = len(shared_servers)
     return result_data
+
+
+# ---------------------------------------------------------------------------
+# Composio MCP integration helpers
+# ---------------------------------------------------------------------------
+
+COMPOSIO_DEFAULT_URL = "https://connect.composio.dev/mcp"
+COMPOSIO_DEFAULT_PORT = 7110
+COMPOSIO_API_KEY_HEADER = "x-consumer-api-key"
+
+
+class ComposioTestPayload(BaseModel):
+    """Optional API key override for testing Composio connectivity."""
+
+    api_key: str = ""
+
+
+class ComposioSetupPayload(BaseModel):
+    """Composio quick-setup payload."""
+
+    api_key: str
+    port: int = Field(default=COMPOSIO_DEFAULT_PORT, ge=1, le=65535)
+
+
+async def _test_composio_connection(api_key: str) -> dict:
+    """Test connectivity to Composio's MCP endpoint.
+
+    Uses the provided API key to connect to Composio via Streamable HTTP,
+    calls initialize + list_tools, and returns the tool list.
+    """
+    from mcp import ClientSession
+    from mcp.client.streamable_http import streamable_http_client
+
+    headers = {COMPOSIO_API_KEY_HEADER: api_key}
+    async with (
+        streamable_http_client(
+            COMPOSIO_DEFAULT_URL,
+            http_client=httpx.AsyncClient(headers=headers),
+        ) as (read_stream, write_stream, _get_session_id),
+        ClientSession(read_stream, write_stream) as session,
+    ):
+        await session.initialize()
+        tools_result = await session.list_tools()
+        tool_names = [t.name for t in tools_result.tools]
+        return {
+            "ok": True,
+            "tool_count": len(tool_names),
+            "tool_names": tool_names,
+        }
+
+
+@router.post("/admin/api/mcp/composio/test")
+async def composio_test_connection(payload: ComposioTestPayload, request: Request):
+    """Test connectivity to Composio's MCP endpoint.
+
+    Uses the provided API key or falls back to the configured ``composio``
+    backend's ``x-consumer-api-key`` header.
+    """
+    require_loopback_admin(request)
+
+    api_key = payload.api_key.strip()
+    if not api_key:
+        # Fall back to configured composio backend
+        config, _ = load_mcp_config()
+        composio = config.servers.get("composio")
+        if composio is None:
+            return {
+                "ok": False,
+                "error": "No Composio backend configured and no API key provided",
+            }
+        api_key = composio.headers.get(COMPOSIO_API_KEY_HEADER, "")
+        if not api_key:
+            return {"ok": False, "error": "Composio backend has no API key configured"}
+
+    try:
+        return await _test_composio_connection(api_key)
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@router.post("/admin/api/mcp/composio/setup")
+async def composio_setup(payload: ComposioSetupPayload, request: Request):
+    """Create or update the ``composio`` MCP backend entry.
+
+    Pre-fills URL, API key header, and port.  Validates and writes config.
+    """
+    require_loopback_admin(request)
+
+    api_key = payload.api_key.strip()
+    if not api_key:
+        raise HTTPException(status_code=400, detail="API key is required")
+
+    config, _ = load_mcp_config()
+    servers = {
+        name: srv.model_dump(exclude={"name"}) for name, srv in config.servers.items()
+    }
+    shared_servers = {
+        name: srv.model_dump(exclude={"name"})
+        for name, srv in config.shared_servers.items()
+    }
+
+    # Build the composio entry
+    composio_entry = {
+        "type": "http",
+        "url": COMPOSIO_DEFAULT_URL,
+        "port": payload.port,
+        "headers": {COMPOSIO_API_KEY_HEADER: api_key},
+    }
+
+    servers["composio"] = composio_entry
+
+    result = write_mcp_config(
+        router_socket=config.router_socket,
+        router_log=config.router_log,
+        router_pidfile=config.router_pidfile,
+        health_timeout_s=config.health_timeout_s,
+        servers=servers,
+        shared_servers=shared_servers,
+    )
+    return result.model_dump()

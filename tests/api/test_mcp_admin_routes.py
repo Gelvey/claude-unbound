@@ -493,3 +493,255 @@ def test_get_mcp_status_returns_backends_when_socket_present(monkeypatch, tmp_pa
     stripe = next(b for b in body["backends"] if b["name"] == "stripe")
     assert stripe["activated"] is True
     assert stripe["tool_count"] == 3
+
+
+# ---------------------------------------------------------------------------
+# POST /admin/api/mcp/composio/test
+# ---------------------------------------------------------------------------
+
+
+def test_composio_test_endpoint_success(monkeypatch, tmp_path):
+    _set_home(monkeypatch, tmp_path)
+    _seed_config(tmp_path)
+    app = create_app(lifespan_enabled=False)
+
+    async def mock_test_connection(api_key):
+        return {
+            "ok": True,
+            "tool_count": 2,
+            "tool_names": ["github_create_issue", "slack_send_message"],
+        }
+
+    with patch("api.admin_routes._test_composio_connection", mock_test_connection):
+        response = _local_client(app).post(
+            "/admin/api/mcp/composio/test",
+            json={"api_key": "test_key"},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["tool_count"] == 2
+    assert "github_create_issue" in body["tool_names"]
+    assert "slack_send_message" in body["tool_names"]
+
+
+def test_composio_test_endpoint_failure(monkeypatch, tmp_path):
+    _set_home(monkeypatch, tmp_path)
+    _seed_config(tmp_path)
+    app = create_app(lifespan_enabled=False)
+
+    async def mock_test_connection(api_key):
+        raise ConnectionError("Connection refused")
+
+    with patch("api.admin_routes._test_composio_connection", mock_test_connection):
+        response = _local_client(app).post(
+            "/admin/api/mcp/composio/test",
+            json={"api_key": "bad_key"},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert "Connection refused" in body["error"]
+
+
+def test_composio_test_endpoint_no_backend_no_key(monkeypatch, tmp_path):
+    _set_home(monkeypatch, tmp_path)
+    # Seed config WITHOUT composio backend
+    config_file = tmp_path / ".fcc" / "mcp_config.json"
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text(
+        json.dumps(
+            {
+                "router_socket": "~/.mcp-router/sockets/router.sock",
+                "router_pidfile": "~/.mcp-router/run/router.pid",
+                "router_log": "~/.mcp-router/logs/router.log",
+                "health_timeout_s": 30,
+                "servers": {
+                    "stripe": {
+                        "type": "stdio",
+                        "command": "npx",
+                        "args": ["-y", "@stripe/mcp@latest"],
+                        "env": {"STRIPE_SECRET_KEY": "sk_live_real_secret"},
+                        "port": 7101,
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    app = create_app(lifespan_enabled=False)
+
+    response = _local_client(app).post(
+        "/admin/api/mcp/composio/test",
+        json={},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert "No Composio backend configured" in body["error"]
+
+
+def test_composio_test_endpoint_uses_configured_key(monkeypatch, tmp_path):
+    _set_home(monkeypatch, tmp_path)
+    _seed_config(tmp_path)
+    app = create_app(lifespan_enabled=False)
+
+    captured_key = None
+
+    async def mock_test_connection(api_key):
+        nonlocal captured_key
+        captured_key = api_key
+        return {
+            "ok": True,
+            "tool_count": 1,
+            "tool_names": ["test_tool"],
+        }
+
+    with patch("api.admin_routes._test_composio_connection", mock_test_connection):
+        # No api_key in payload — should fall back to configured composio backend
+        response = _local_client(app).post(
+            "/admin/api/mcp/composio/test",
+            json={},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert captured_key == "real_composio_key"
+
+
+# ---------------------------------------------------------------------------
+# POST /admin/api/mcp/composio/setup
+# ---------------------------------------------------------------------------
+
+
+def test_composio_setup_creates_backend(monkeypatch, tmp_path):
+    _set_home(monkeypatch, tmp_path)
+    # Config without composio
+    config_file = tmp_path / ".fcc" / "mcp_config.json"
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text(
+        json.dumps(
+            {
+                "router_socket": "~/.mcp-router/sockets/router.sock",
+                "router_pidfile": "~/.mcp-router/run/router.pid",
+                "router_log": "~/.mcp-router/logs/router.log",
+                "health_timeout_s": 30,
+                "servers": {
+                    "stripe": {
+                        "type": "stdio",
+                        "command": "npx",
+                        "args": ["-y", "@stripe/mcp@latest"],
+                        "env": {"STRIPE_SECRET_KEY": "sk_live_real_secret"},
+                        "port": 7101,
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    app = create_app(lifespan_enabled=False)
+
+    response = _local_client(app).post(
+        "/admin/api/mcp/composio/setup",
+        json={"api_key": "new_composio_key"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["applied"] is True
+
+    # Verify the config file was updated
+    saved = json.loads(config_file.read_text())
+    assert "composio" in saved["servers"]
+    composio = saved["servers"]["composio"]
+    assert composio["type"] == "http"
+    assert composio["url"] == "https://connect.composio.dev/mcp"
+    assert composio["port"] == 7110
+    assert composio["headers"]["x-consumer-api-key"] == "new_composio_key"
+
+
+def test_composio_setup_updates_existing_key(monkeypatch, tmp_path):
+    _set_home(monkeypatch, tmp_path)
+    _seed_config(tmp_path)
+    app = create_app(lifespan_enabled=False)
+
+    response = _local_client(app).post(
+        "/admin/api/mcp/composio/setup",
+        json={"api_key": "updated_key", "port": 7110},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["applied"] is True
+
+    saved = json.loads((tmp_path / ".fcc" / "mcp_config.json").read_text())
+    assert (
+        saved["servers"]["composio"]["headers"]["x-consumer-api-key"] == "updated_key"
+    )
+    # Other servers should be preserved
+    assert "stripe" in saved["servers"]
+    assert "remote-sse" in saved["servers"]
+
+
+def test_composio_setup_preserves_shared_servers(monkeypatch, tmp_path):
+    _set_home(monkeypatch, tmp_path)
+    _seed_config(tmp_path)
+    app = create_app(lifespan_enabled=False)
+
+    response = _local_client(app).post(
+        "/admin/api/mcp/composio/setup",
+        json={"api_key": "new_key"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["applied"] is True
+
+    saved = json.loads((tmp_path / ".fcc" / "mcp_config.json").read_text())
+    # Shared servers should be preserved
+    assert "remote-ssh" in saved["shared_servers"]
+    assert "composio-shared" in saved["shared_servers"]
+
+
+def test_composio_setup_empty_key_rejected(monkeypatch, tmp_path):
+    _set_home(monkeypatch, tmp_path)
+    _seed_config(tmp_path)
+    app = create_app(lifespan_enabled=False)
+
+    response = _local_client(app).post(
+        "/admin/api/mcp/composio/setup",
+        json={"api_key": ""},
+    )
+
+    assert response.status_code == 400
+    assert "API key is required" in response.json()["detail"]
+
+
+def test_composio_setup_loopback_only(monkeypatch, tmp_path):
+    _set_home(monkeypatch, tmp_path)
+    _seed_config(tmp_path)
+    app = create_app(lifespan_enabled=False)
+
+    remote_client = TestClient(app, client=("203.0.113.10", 50000))
+    response = remote_client.post(
+        "/admin/api/mcp/composio/setup",
+        json={"api_key": "test"},
+    )
+    assert response.status_code == 403
+
+
+def test_composio_test_loopback_only(monkeypatch, tmp_path):
+    _set_home(monkeypatch, tmp_path)
+    _seed_config(tmp_path)
+    app = create_app(lifespan_enabled=False)
+
+    remote_client = TestClient(app, client=("203.0.113.10", 50000))
+    response = remote_client.post(
+        "/admin/api/mcp/composio/test",
+        json={"api_key": "test"},
+    )
+    assert response.status_code == 403

@@ -734,3 +734,49 @@ textarea:focus-visible {
 #sftp-section .field-grid {
   grid-template-columns: repeat(auto-fit, minmax(240px, 360px));
 }
+
+/* Composio integration section */
+.composio-section {
+  border-left: 3px solid var(--accent);
+  padding-left: 16px;
+}
+
+.composio-setup-card,
+.composio-status-card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 20px;
+  margin-top: 12px;
+}
+
+.composio-setup-card .field {
+  max-width: 400px;
+  margin-bottom: 16px;
+}
+
+.composio-status-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.composio-tools-list {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+  max-height: 60px;
+  overflow-y: auto;
+}
+
+.composio-status-card .field {
+  max-width: 400px;
+  margin-bottom: 16px;
+}
+
+.field-hint {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 4px;
+}

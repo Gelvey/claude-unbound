@@ -669,6 +669,9 @@ function renderMcpView(config, status) {
     });
   }
 
+  // Composio quick-setup / status section
+  renderComposioSection(config, liveMap, container);
+
   // Helper to render a backend grid
   function renderBackendGrid(serversObj, label, description, isShared) {
     const section = document.createElement("section");
@@ -1175,6 +1178,196 @@ function showSftpMessage(section, message, kind) {
   section.appendChild(msg);
 }
 
+function renderComposioSection(config, liveMap, container) {
+  const composio = config.servers && config.servers.composio;
+  const composioLive = liveMap.composio;
+  const section = document.createElement("section");
+  section.className = "settings-section composio-section";
+
+  if (!composio) {
+    // --- Quick-setup card ---
+    const heading = document.createElement("div");
+    heading.className = "section-heading";
+    heading.innerHTML = `<div><h3>Composio</h3><p>Connect to Composio's MCP marketplace to access hundreds of tools (GitHub, Slack, Stripe, Notion, and more). <a href="https://composio.dev" target="_blank" rel="noopener">Get an API key</a></p></div>`;
+    section.appendChild(heading);
+
+    const card = document.createElement("div");
+    card.className = "composio-setup-card";
+
+    const keyField = document.createElement("div");
+    keyField.className = "field";
+    const keyLabel = document.createElement("label");
+    keyLabel.textContent = "Composio API Key";
+    const keyInput = document.createElement("input");
+    keyInput.type = "password";
+    keyInput.placeholder = "Enter your Composio API key";
+    keyInput.id = "composioApiKeyInput";
+    keyField.append(keyLabel, keyInput);
+    card.appendChild(keyField);
+
+    const actions = document.createElement("div");
+    actions.className = "mcp-action-row";
+
+    const connectBtn = document.createElement("button");
+    connectBtn.type = "button";
+    connectBtn.className = "primary-button";
+    connectBtn.textContent = "Connect Composio";
+    connectBtn.addEventListener("click", async () => {
+      const apiKey = keyInput.value.trim();
+      if (!apiKey) {
+        showMessage("Please enter your Composio API key", "error");
+        return;
+      }
+      connectBtn.disabled = true;
+      connectBtn.textContent = "Connecting...";
+      try {
+        const result = await api("/admin/api/mcp/composio/setup", {
+          method: "POST",
+          body: JSON.stringify({ api_key: apiKey }),
+        });
+        if (result.applied) {
+          showMessage("Composio connected successfully", "ok");
+          await loadMcpView();
+        } else {
+          showMessage(result.errors ? result.errors.join("; ") : "Setup failed", "error");
+        }
+      } catch (error) {
+        showMessage(`Setup failed: ${error.message}`, "error");
+      } finally {
+        connectBtn.disabled = false;
+        connectBtn.textContent = "Connect Composio";
+      }
+    });
+
+    actions.appendChild(connectBtn);
+    card.appendChild(actions);
+    section.appendChild(card);
+  } else {
+    // --- Status card ---
+    const heading = document.createElement("div");
+    heading.className = "section-heading";
+    heading.innerHTML = `<div><h3>Composio</h3><p>Connected to Composio MCP marketplace. <a href="https://composio.dev" target="_blank" rel="noopener">composio.dev</a></p></div>`;
+    section.appendChild(heading);
+
+    const card = document.createElement("div");
+    card.className = "composio-status-card";
+
+    // Status row
+    const statusRow = document.createElement("div");
+    statusRow.className = "composio-status-row";
+    const pill = document.createElement("span");
+    if (composioLive && composioLive.activated) {
+      pill.className = "status-pill ok";
+      pill.textContent = `${composioLive.tool_count} tool(s) available`;
+    } else if (composioLive) {
+      pill.className = "status-pill neutral";
+      pill.textContent = "Configured (not activated)";
+    } else {
+      pill.className = "status-pill neutral";
+      pill.textContent = "Configured";
+    }
+    statusRow.appendChild(pill);
+
+    // Tool names if available
+    if (composioLive && composioLive.tool_names && composioLive.tool_names.length > 0) {
+      const toolsList = document.createElement("div");
+      toolsList.className = "composio-tools-list";
+      toolsList.textContent = composioLive.tool_names.join(", ");
+      statusRow.appendChild(toolsList);
+    }
+    card.appendChild(statusRow);
+
+    // API key update field
+    const keyField = document.createElement("div");
+    keyField.className = "field";
+    const keyLabel = document.createElement("label");
+    keyLabel.textContent = "Update API Key";
+    const keyInput = document.createElement("input");
+    keyInput.type = "password";
+    keyInput.placeholder = "Enter new key to replace";
+    keyField.append(keyLabel, keyInput);
+    card.appendChild(keyField);
+
+    // Action buttons
+    const actions = document.createElement("div");
+    actions.className = "mcp-action-row";
+
+    const testBtn = document.createElement("button");
+    testBtn.type = "button";
+    testBtn.className = "secondary-button";
+    testBtn.textContent = "Test Connection";
+    testBtn.addEventListener("click", async () => {
+      testBtn.disabled = true;
+      testBtn.textContent = "Testing...";
+      try {
+        const apiKey = keyInput.value.trim();
+        const body = apiKey ? { api_key: apiKey } : {};
+        const result = await api("/admin/api/mcp/composio/test", {
+          method: "POST",
+          body: JSON.stringify(body),
+        });
+        if (result.ok) {
+          showMessage(`Composio OK: ${result.tool_count} tools available`, "ok");
+        } else {
+          showMessage(`Composio test failed: ${result.error}`, "error");
+        }
+      } catch (error) {
+        showMessage(`Test failed: ${error.message}`, "error");
+      } finally {
+        testBtn.disabled = false;
+        testBtn.textContent = "Test Connection";
+      }
+    });
+
+    const updateBtn = document.createElement("button");
+    updateBtn.type = "button";
+    updateBtn.className = "primary-button";
+    updateBtn.textContent = "Update Key";
+    updateBtn.addEventListener("click", async () => {
+      const apiKey = keyInput.value.trim();
+      if (!apiKey) {
+        showMessage("Enter a new API key to update", "error");
+        return;
+      }
+      updateBtn.disabled = true;
+      updateBtn.textContent = "Updating...";
+      try {
+        const result = await api("/admin/api/mcp/composio/setup", {
+          method: "POST",
+          body: JSON.stringify({ api_key: apiKey, port: composio.port }),
+        });
+        if (result.applied) {
+          showMessage("Composio API key updated", "ok");
+          keyInput.value = "";
+          await loadMcpView();
+        } else {
+          showMessage(result.errors ? result.errors.join("; ") : "Update failed", "error");
+        }
+      } catch (error) {
+        showMessage(`Update failed: ${error.message}`, "error");
+      } finally {
+        updateBtn.disabled = false;
+        updateBtn.textContent = "Update Key";
+      }
+    });
+
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.className = "ghost-button";
+    removeBtn.textContent = "Remove";
+    removeBtn.addEventListener("click", async () => {
+      delete config.servers.composio;
+      await saveMcpConfig();
+    });
+
+    actions.append(testBtn, updateBtn, removeBtn);
+    card.appendChild(actions);
+    section.appendChild(card);
+  }
+
+  container.appendChild(section);
+}
+
 function showMcpEditForm(name, srv, isShared) {
   const existingForm = byId("mcpEditForm");
   if (existingForm) existingForm.remove();
@@ -1239,6 +1432,11 @@ function showMcpEditForm(name, srv, isShared) {
   // URL (sse / http)
   const urlField = createFormInput("URL", srv ? srv.url || "" : "", "text");
   urlField.dataset.showFor = "sse,http";
+  const urlHint = document.createElement("div");
+  urlHint.className = "field-hint";
+  urlHint.textContent = "For Composio: https://connect.composio.dev/mcp";
+  urlHint.dataset.showFor = "http";
+  urlField.appendChild(urlHint);
 
   // Headers (http) - key=value rows
   const headersField = document.createElement("div");
@@ -1246,7 +1444,10 @@ function showMcpEditForm(name, srv, isShared) {
   headersField.dataset.showFor = "http";
   const headersLabel = document.createElement("label");
   headersLabel.textContent = "HTTP Headers";
-  headersField.appendChild(headersLabel);
+  const headersHint = document.createElement("div");
+  headersHint.className = "field-hint";
+  headersHint.textContent = "Authentication headers (e.g., x-consumer-api-key for Composio)";
+  headersField.append(headersLabel, headersHint);
   const headersRows = document.createElement("div");
   headersRows.className = "mcp-env-rows";
   const existingHeaders = (srv && srv.headers) ? srv.headers : {};
