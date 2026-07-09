@@ -285,7 +285,8 @@ PROVIDER_CATALOG: dict[str, ProviderDescriptor] = {
 # groq / fireworks overlap; remainder and locals last per project plan (
 # github.com/cheahjs/free-llm-api-resources Free Providers TOC as rough guide beyond fixed slots).
 # ``SUPPORTED_PROVIDER_IDS`` inherits this insertion order for UI and error-message listing.
-SUPPORTED_PROVIDER_IDS: tuple[str, ...] = tuple(PROVIDER_CATALOG.keys())
+# It is a mutable list so custom modules can register additional provider ids at runtime.
+SUPPORTED_PROVIDER_IDS: list[str] = list(PROVIDER_CATALOG.keys())
 
 if len(set(SUPPORTED_PROVIDER_IDS)) != len(SUPPORTED_PROVIDER_IDS):
     raise AssertionError("Duplicate provider ids in PROVIDER_CATALOG key order")

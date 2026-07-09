@@ -11,6 +11,7 @@ FCC_LOGS_DIRNAME = "logs"
 SERVER_LOG_FILENAME = "server.log"
 CODEX_MODEL_CATALOG_FILENAME = "codex-model-catalog.json"
 MCP_CONFIG_FILENAME = "mcp_config.json"
+MODULES_DIRNAME = "modules"
 
 
 def config_dir_path() -> Path:
@@ -57,3 +58,9 @@ def mcp_config_path() -> Path:
     """Return the canonical MCP config path (~/.fcc/mcp_config.json)."""
 
     return config_dir_path() / MCP_CONFIG_FILENAME
+
+
+def modules_dir_path() -> Path:
+    """Return the default directory for custom modules."""
+
+    return config_dir_path() / MODULES_DIRNAME

@@ -31,4 +31,4 @@ def test_provider_catalog_key_order_matches_canonical_plan() -> None:
     """NIM first; DeepSeek fourth; Wafer ninth / Kimi tenth; cloudflare_ai after cerebras (see contributor plan)."""
 
     assert tuple(PROVIDER_CATALOG.keys()) == _EXPECTED_PROVIDER_ORDER
-    assert SUPPORTED_PROVIDER_IDS == _EXPECTED_PROVIDER_ORDER
+    assert tuple(SUPPORTED_PROVIDER_IDS) == _EXPECTED_PROVIDER_ORDER

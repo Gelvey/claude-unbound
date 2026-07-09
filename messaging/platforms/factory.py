@@ -3,11 +3,13 @@
 Creates the appropriate messaging platform adapter based on configuration.
 To add a new platform (e.g. Discord, Slack):
 1. Create a new class implementing MessagingPlatform in messaging/platforms/
-2. Add a case to create_messaging_platform() below
+2. Register it from a custom module via
+   ``Module(...).messaging_platform(name, factory)``.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from loguru import logger
@@ -34,25 +36,23 @@ class MessagingPlatformOptions:
     log_api_error_tracebacks: bool = False
 
 
-def create_messaging_platform(
-    platform_type: str,
-    options: MessagingPlatformOptions | None = None,
-) -> MessagingPlatform | None:
-    """Create a messaging platform instance based on type.
+_PlatformFactory = Callable[[MessagingPlatformOptions], MessagingPlatform | None]
 
-    Args:
-        platform_type: Platform identifier (``telegram``, ``discord``, ``none``).
-        options: Token, allowlist, and voice / transcription settings.
+# Built-in platform factories.
+_PLATFORM_FACTORIES: dict[str, _PlatformFactory] = {}
 
-    Returns:
-        Configured :class:`MessagingPlatform` instance, or None if not configured.
-    """
-    opts = options or MessagingPlatformOptions()
-    if platform_type == "none":
+
+def _register_builtin_platforms() -> None:
+    """Lazily import and register the built-in Telegram and Discord platforms."""
+
+    if "none" in _PLATFORM_FACTORIES:
+        return
+
+    def _none_factory(_opts: MessagingPlatformOptions) -> None:
         logger.info("Messaging platform disabled by configuration")
         return None
 
-    if platform_type == "telegram":
+    def _telegram_factory(opts: MessagingPlatformOptions) -> MessagingPlatform | None:
         bot_token = opts.telegram_bot_token
         if not bot_token:
             logger.info("No Telegram bot token configured, skipping platform setup")
@@ -74,7 +74,7 @@ def create_messaging_platform(
             log_api_error_tracebacks=opts.log_api_error_tracebacks,
         )
 
-    if platform_type == "discord":
+    def _discord_factory(opts: MessagingPlatformOptions) -> MessagingPlatform | None:
         bot_token = opts.discord_bot_token
         if not bot_token:
             logger.info("No Discord bot token configured, skipping platform setup")
@@ -96,8 +96,58 @@ def create_messaging_platform(
             log_api_error_tracebacks=opts.log_api_error_tracebacks,
         )
 
-    logger.warning(
-        f"Unknown messaging platform: '{platform_type}'. "
-        "Supported: 'none', 'telegram', 'discord'"
+    _PLATFORM_FACTORIES.update(
+        {
+            "none": _none_factory,
+            "telegram": _telegram_factory,
+            "discord": _discord_factory,
+        }
     )
-    return None
+
+
+def register_messaging_platform(
+    name: str,
+    factory: _PlatformFactory,
+) -> None:
+    """Register a messaging platform factory (used by custom modules)."""
+
+    if name in _PLATFORM_FACTORIES:
+        raise ValueError(f"Messaging platform '{name}' is already registered")
+    _PLATFORM_FACTORIES[name] = factory
+
+
+def unregister_messaging_platforms(names: list[str]) -> None:
+    """Remove platform factories (used by tests resetting module state)."""
+
+    for name in names:
+        _PLATFORM_FACTORIES.pop(name, None)
+
+
+def create_messaging_platform(
+    platform_type: str,
+    options: MessagingPlatformOptions | None = None,
+) -> MessagingPlatform | None:
+    """Create a messaging platform instance based on type.
+
+    Args:
+        platform_type: Platform identifier (``telegram``, ``discord``, ``none``,
+            or a value registered by a custom module).
+        options: Token, allowlist, and voice / transcription settings.
+
+    Returns:
+        Configured :class:`MessagingPlatform` instance, or None if not configured.
+    """
+
+    _register_builtin_platforms()
+    opts = options or MessagingPlatformOptions()
+    factory = _PLATFORM_FACTORIES.get(platform_type)
+    if factory is None:
+        known = ", ".join(f"'{n}'" for n in _PLATFORM_FACTORIES)
+        logger.warning(
+            "Unknown messaging platform: '{}'. Supported: {}",
+            platform_type,
+            known,
+        )
+        return None
+
+    return factory(opts)

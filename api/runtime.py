@@ -110,6 +110,7 @@ class AppRuntime:
             await self._validate_configured_models_best_effort()
             self._provider_registry.start_model_list_refresh(self.settings)
             await self._start_messaging_if_configured()
+            await self._run_module_startup_hooks()
             self._publish_state()
             logging.getLogger("uvicorn.error").info(
                 "Admin UI: %s (local-only)", admin_url
@@ -172,9 +173,22 @@ class AppRuntime:
                 log_verbose_errors=verbose,
             )
         await self._shutdown_limiter()
+        await self._run_module_shutdown_hooks()
         logger.info("Server shut down cleanly")
 
-    async def _start_messaging_if_configured(self) -> None:
+    async def _run_module_shutdown_hooks(self) -> None:
+        """Run any custom-module shutdown hooks attached to the app."""
+
+        module_manager = getattr(self.app.state, "modules", None)
+        if module_manager is None:
+            return
+        await best_effort(
+            "module_shutdown_hooks",
+            module_manager.run_shutdown(self.app, self.settings),
+            log_verbose_errors=self.settings.log_api_error_tracebacks,
+        )
+
+    async def _start_messaging_if_configured(self):
         try:
             from messaging.platforms.factory import (
                 MessagingPlatformOptions,
@@ -302,6 +316,23 @@ class AppRuntime:
             session_store.sync_from_tree_data(
                 tree_data["trees"], tree_data["node_to_tree"]
             )
+
+    async def _run_module_startup_hooks(self) -> None:
+        """Run any custom-module startup hooks attached to the app."""
+
+        module_manager = getattr(self.app.state, "modules", None)
+        if module_manager is None:
+            return
+        try:
+            await module_manager.run_startup(self.app, self.settings)
+        except Exception as exc:
+            log_startup_failure(self.settings, exc)
+            if os.environ.get("FCC_MODULES_STRICT", "").lower() in {
+                "1",
+                "true",
+                "yes",
+            }:
+                raise
 
     def _publish_state(self) -> None:
         self.app.state.messaging_platform = self.messaging_platform

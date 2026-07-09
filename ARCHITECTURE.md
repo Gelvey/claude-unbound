@@ -581,6 +581,17 @@ when maintainers want branch-level assurance.
 
 ## Extension Checklists
 
+### Add A Custom Module
+
+1. Place the module in `~/.fcc/modules/` or set `FCC_MODULES_DIR`.
+2. Expose a `FCC_MODULE` object or a `setup_module(app, settings)` function that
+   returns `api.modules.Module`.
+3. Use the fluent builder to register providers, routers, intercepts,
+   optimization handlers, messaging platforms, or lifecycle hooks.
+4. Add tests under [tests/api/](tests/api/) using the `modules_dir` and
+   `reset_loaded_modules` fixtures.
+5. Document examples and constraints in [docs/MODULES.md](docs/MODULES.md).
+
 ### Add An Admin Setting
 
 1. Add or expose the setting in [config/settings.py](config/settings.py).

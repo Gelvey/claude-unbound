@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import traceback
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Iterable
 from typing import Any
 
 from fastapi import HTTPException
@@ -101,6 +102,26 @@ def _require_non_empty_messages(messages: list[Any]) -> None:
         raise InvalidRequestError("messages cannot be empty")
 
 
+# Module-level mutable list so custom modules can contribute intercepts.
+_MESSAGE_INTERCEPTS: list[MessageIntercept] = []
+
+
+def add_message_intercepts(
+    intercepts: Iterable[MessageIntercept],
+) -> None:
+    """Append intercepts to the runtime message-intercept list."""
+
+    _MESSAGE_INTERCEPTS.extend(intercepts)
+
+
+def remove_message_intercepts(intercepts: Iterable[MessageIntercept]) -> None:
+    """Remove previously appended intercepts (used by tests)."""
+
+    for intercept in intercepts:
+        with contextlib.suppress(ValueError):
+            _MESSAGE_INTERCEPTS.remove(intercept)
+
+
 class ApiRequestPipeline:
     """Coordinate API request intercepts, routing, and provider stream execution."""
 
@@ -117,10 +138,13 @@ class ApiRequestPipeline:
         self._model_router = model_router or ModelRouter(settings)
         self._token_counter = token_counter
         self._responses_adapter = responses_adapter or OpenAIResponsesAdapter()
-        self._message_intercepts: tuple[MessageIntercept, ...] = (
+        # Start with the built-in intercepts, then any intercepts contributed by
+        # custom modules. This is a copy so per-instance mutation is isolated.
+        self._message_intercepts: list[MessageIntercept] = [
             self._intercept_web_server_tool,
             self._intercept_local_optimization,
-        )
+            *_MESSAGE_INTERCEPTS,
+        ]
 
     def create_message(self, request_data: MessagesRequest) -> object:
         """Create an Anthropic-compatible message response."""

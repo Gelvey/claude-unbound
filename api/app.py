@@ -92,6 +92,21 @@ class GracefulLifespanApp:
 
 def create_app(*, lifespan_enabled: bool = True) -> FastAPI:
     """Create and configure the FastAPI application."""
+    app_kwargs: dict[str, Any] = {
+        "title": "Claude Code Proxy",
+        "version": "2.1.0",
+    }
+    if lifespan_enabled:
+        app_kwargs["lifespan"] = lifespan
+    app = FastAPI(**app_kwargs)
+
+    # Load custom modules before instantiating Settings so module-registered
+    # provider IDs are included in model validation.
+    from api.modules.loader import ModuleManager
+
+    module_manager = ModuleManager.load_for_app(app, settings=None)
+    app.state.modules = module_manager
+
     settings = get_settings()
     log_path = Path(os.getenv("LOG_FILE", server_log_path()))
     configure_logging(
@@ -100,14 +115,6 @@ def create_app(*, lifespan_enabled: bool = True) -> FastAPI:
         level=settings.log_level,
     )
     configure_trace_payloads(settings.trace_full_payloads)
-
-    app_kwargs: dict[str, Any] = {
-        "title": "Claude Code Proxy",
-        "version": "2.1.0",
-    }
-    if lifespan_enabled:
-        app_kwargs["lifespan"] = lifespan
-    app = FastAPI(**app_kwargs)
 
     @app.middleware("http")
     async def trace_http_correlation(request: Request, call_next):
@@ -121,7 +128,7 @@ def create_app(*, lifespan_enabled: bool = True) -> FastAPI:
             response = await call_next(request)
         return response
 
-    # Register routes
+    # Register built-in routes (module routers were mounted during module loading).
     app.include_router(admin_router)
     app.include_router(router)
 

@@ -2,20 +2,22 @@ import asyncio
 import contextlib
 import logging
 import os
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from config.settings import Settings
-
-# Set mock environment BEFORE any imports that use Settings
+# Disable custom module discovery by default so existing tests remain isolated.
+os.environ["FCC_MODULES_ENABLED"] = "false"
 os.environ.setdefault("NVIDIA_NIM_API_KEY", "test_key")
 os.environ.setdefault("MODEL", "nvidia_nim/test-model")
 os.environ["PTB_TIMEDELTA"] = "1"
 # Ensure tests don't pick up a server API key from the repo .env
 # (tests expect endpoints to be unauthenticated by default)
 os.environ["ANTHROPIC_AUTH_TOKEN"] = ""
+
+from config.settings import Settings
 
 Settings.model_config = {**Settings.model_config, "env_file": None}
 
@@ -209,3 +211,29 @@ def _propagate_loguru_to_caplog():
         loguru_logger.remove(
             handler_id
         )  # Handler already removed (e.g. by test_logging_config)
+
+
+@pytest.fixture
+def modules_dir(tmp_path: Path, monkeypatch):
+    """Create a temporary directory for custom modules and enable loading from it."""
+
+    path = tmp_path / "modules"
+    path.mkdir()
+    monkeypatch.setenv("FCC_MODULES_ENABLED", "true")
+    monkeypatch.setenv("FCC_MODULES_DIR", str(path))
+    return path
+
+
+@pytest.fixture
+def reset_loaded_modules():
+    """Reset any module-contributed global state after a modules test."""
+
+    managers: list = []
+
+    def _track(manager):
+        managers.append(manager)
+
+    yield _track
+
+    for manager in managers:
+        manager.reset()

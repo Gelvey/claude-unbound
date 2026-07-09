@@ -155,7 +155,7 @@ class ConversationDriver:
 class ProviderMatrixDriver:
     """Resolve provider models and enforce matrix semantics for product smoke."""
 
-    ALL_PROVIDERS: tuple[str, ...] = SUPPORTED_PROVIDER_IDS
+    ALL_PROVIDERS: list[str] = SUPPORTED_PROVIDER_IDS
 
     def __init__(self, config: SmokeConfig) -> None:
         self.config = config

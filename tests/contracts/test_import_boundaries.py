@@ -58,7 +58,7 @@ def test_provider_catalog_is_single_source_for_supported_ids() -> None:
     from config.provider_catalog import PROVIDER_CATALOG, SUPPORTED_PROVIDER_IDS
     from providers.registry import PROVIDER_DESCRIPTORS, PROVIDER_FACTORIES
 
-    assert tuple(PROVIDER_CATALOG.keys()) == SUPPORTED_PROVIDER_IDS
+    assert tuple(PROVIDER_CATALOG.keys()) == tuple(SUPPORTED_PROVIDER_IDS)
     assert PROVIDER_DESCRIPTORS is PROVIDER_CATALOG
     assert set(SUPPORTED_PROVIDER_IDS) == set(PROVIDER_FACTORIES)
 

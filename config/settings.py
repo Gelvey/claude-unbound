@@ -13,7 +13,7 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from .constants import HTTP_CONNECT_TIMEOUT_DEFAULT
 from .nim import NimSettings
-from .paths import default_claude_workspace_path, managed_env_path
+from .paths import default_claude_workspace_path, managed_env_path, modules_dir_path
 from .provider_ids import SUPPORTED_PROVIDER_IDS
 
 
@@ -448,6 +448,13 @@ class Settings(BaseSettings):
     # Set via env `ANTHROPIC_AUTH_TOKEN`. When empty, no auth is required.
     anthropic_auth_token: str = Field(
         default="", validation_alias="ANTHROPIC_AUTH_TOKEN"
+    )
+
+    # ==================== Custom Modules ====================
+    modules_enabled: bool = Field(default=True, validation_alias="FCC_MODULES_ENABLED")
+    modules_dir: str = Field(
+        default_factory=lambda: str(modules_dir_path()),
+        validation_alias="FCC_MODULES_DIR",
     )
 
     # Handle empty strings for optional string fields

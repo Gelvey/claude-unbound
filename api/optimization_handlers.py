@@ -5,6 +5,7 @@ optimization is enabled, otherwise None.
 """
 
 import uuid
+from collections.abc import Callable
 
 from loguru import logger
 
@@ -134,7 +135,9 @@ def try_filepath_mock(
 
 
 # Cheapest/most common optimizations first for faster short-circuit.
-OPTIMIZATION_HANDLERS = [
+OPTIMIZATION_HANDLERS: list[
+    Callable[[MessagesRequest, Settings], MessagesResponse | None]
+] = [
     try_quota_mock,
     try_prefix_detection,
     try_title_skip,
