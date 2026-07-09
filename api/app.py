@@ -128,6 +128,11 @@ def create_app(*, lifespan_enabled: bool = True) -> FastAPI:
             response = await call_next(request)
         return response
 
+    # Apply module-supplied middlewares AFTER the trace middleware so they
+    # wrap it (i.e. an auth-checking module middleware runs *before* the
+    # trace middleware binds the request id to logs).
+    module_manager.apply_middlewares(app)
+
     # Register built-in routes (module routers were mounted during module loading).
     app.include_router(admin_router)
     app.include_router(router)

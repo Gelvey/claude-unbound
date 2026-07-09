@@ -11,7 +11,8 @@ redacted.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator, AsyncIterator, Mapping
+import contextlib
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterable, Mapping
 from typing import Any
 
 from loguru import logger
@@ -82,6 +83,35 @@ def _sanitize_trace_value(obj: Any) -> Any:
     return obj
 
 
+# Module-registered listeners are invoked for every trace event after the
+# loguru binding. Errors are logged but never propagate.
+_TRACE_LISTENERS: list[Callable[[str, str, str, dict[str, Any]], None]] = []
+
+
+def add_trace_listeners(
+    listeners: Iterable[Callable[[str, str, str, dict[str, Any]], None]],
+) -> None:
+    """Append module-supplied trace listeners."""
+
+    _TRACE_LISTENERS.extend(listeners)
+
+
+def remove_trace_listeners(
+    listeners: Iterable[Callable[[str, str, str, dict[str, Any]], None]],
+) -> None:
+    """Remove previously appended trace listeners (used by tests)."""
+
+    for listener in listeners:
+        with contextlib.suppress(ValueError):
+            _TRACE_LISTENERS.remove(listener)
+
+
+def get_trace_listeners() -> list[Callable[[str, str, str, dict[str, Any]], None]]:
+    """Return a copy of the registered trace listeners."""
+
+    return list(_TRACE_LISTENERS)
+
+
 def trace_event(*, stage: str, event: str, source: str, **fields: Any) -> None:
     """Emit one structured TRACE row (merged into JSON by the log sink)."""
     payload = _sanitize_trace_value(
@@ -93,6 +123,14 @@ def trace_event(*, stage: str, event: str, source: str, **fields: Any) -> None:
         },
     )
     logger.bind(trace_payload=payload).info("TRACE {}", event)
+    for listener in _TRACE_LISTENERS:
+        try:
+            listener(stage, event, source, dict(fields))
+        except Exception:
+            logger.exception(
+                "Trace listener failed: listener={}",
+                getattr(listener, "__name__", listener),
+            )
 
 
 def api_messages_request_snapshot(req: Any) -> dict[str, Any]:

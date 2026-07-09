@@ -175,6 +175,7 @@ async function load() {
   const config = await api("/admin/api/config");
   state.config = config;
   state.fields = new Map(config.fields.map((field) => [field.key, field]));
+  await loadModuleTabs();
   renderNav();
   renderProviders(config.provider_status);
   renderSections(config.sections, config.fields);
@@ -183,6 +184,55 @@ async function load() {
   await refreshLocalStatus();
   updateDirtyState();
   showMessage("");
+}
+
+async function loadModuleTabs() {
+  try {
+    const payload = await api("/admin/api/modules/tabs");
+    const tabs = Array.isArray(payload && payload.tabs) ? payload.tabs : [];
+    for (const tab of tabs) {
+      injectModuleTab(tab);
+    }
+  } catch (err) {
+    // Endpoint may not exist on older builds; non-fatal.
+    console.warn("Module tabs endpoint unavailable:", err);
+  }
+}
+
+function injectModuleTab(tab) {
+  if (!tab || !tab.id) return;
+  if (VIEW_GROUPS.some((view) => view.id === tab.id)) {
+    // Built-in view with same id wins; skip to avoid duplicates.
+    return;
+  }
+  const containerId = `moduleTabSections_${tab.id}`;
+  VIEW_GROUPS.push({
+    id: tab.id,
+    label: tab.label || tab.id,
+    title: tab.title || tab.label || tab.id,
+    sections: [tab.id],
+    containerId,
+  });
+
+  const container = document.createElement("section");
+  container.className = "admin-view";
+  container.dataset.view = tab.id;
+  container.id = containerId;
+  container.hidden = true;
+  container.innerHTML = tab.html || "";
+
+  const viewsRoot = byId("adminViews");
+  if (viewsRoot) viewsRoot.appendChild(container);
+
+  if (tab.mount_js) {
+    try {
+      // eslint-disable-next-line no-new-func
+      const mount = new Function("container", tab.mount_js);
+      mount(container);
+    } catch (err) {
+      console.error(`Module tab '${tab.id}' mount_js failed:`, err);
+    }
+  }
 }
 
 function renderNav() {

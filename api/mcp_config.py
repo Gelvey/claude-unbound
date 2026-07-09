@@ -9,6 +9,7 @@ import os
 import re
 import socket
 import stat
+from collections.abc import Iterable
 from io import StringIO
 from pathlib import Path
 from typing import Any, Literal
@@ -99,6 +100,40 @@ class McpConfigResult(BaseModel):
 def _resolve_config_path() -> Path:
     """Return the canonical config path, respecting MCP_ROUTER_CONFIG override."""
     return Path(os.environ.get("MCP_ROUTER_CONFIG", str(mcp_config_path())))
+
+
+def merge_module_backends(
+    base: dict[str, McpBackend],
+    modules: Iterable[Any],
+) -> dict[str, McpBackend]:
+    """Merge module-registered MCP backends into a ``servers``-style dict.
+
+    Each module entry is an :class:`api.modules.contracts.ModuleMcpServer`
+    with ``name`` and ``backend`` (an :class:`McpBackend`). Existing
+    entries with the same name win so user-saved values are preserved.
+    Backends with a bad shape are skipped and logged.
+    """
+    from loguru import logger
+
+    merged: dict[str, McpBackend] = dict(base)
+    for entry in modules:
+        name = getattr(entry, "name", None)
+        backend = getattr(entry, "backend", None)
+        if not name or not isinstance(backend, McpBackend):
+            logger.warning(
+                "Module MCP entry skipped: name={} backend_type={}",
+                name,
+                type(backend).__name__ if backend is not None else "None",
+            )
+            continue
+        if name in merged:
+            logger.debug(
+                "Module MCP backend '{}' already present; keeping existing entry",
+                name,
+            )
+            continue
+        merged[name] = backend
+    return merged
 
 
 def _mask_env(env: dict[str, str]) -> dict[str, str]:

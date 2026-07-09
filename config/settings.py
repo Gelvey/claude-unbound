@@ -13,7 +13,7 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from .constants import HTTP_CONNECT_TIMEOUT_DEFAULT
 from .nim import NimSettings
-from .paths import default_claude_workspace_path, managed_env_path, modules_dir_path
+from .paths import default_claude_workspace_path, managed_env_path
 from .provider_ids import SUPPORTED_PROVIDER_IDS
 
 
@@ -451,11 +451,13 @@ class Settings(BaseSettings):
     )
 
     # ==================== Custom Modules ====================
-    modules_enabled: bool = Field(default=True, validation_alias="FCC_MODULES_ENABLED")
-    modules_dir: str = Field(
-        default_factory=lambda: str(modules_dir_path()),
-        validation_alias="FCC_MODULES_DIR",
-    )
+    # ``FCC_MODULES_ENABLED`` and ``FCC_MODULES_DIR`` are read by the module
+    # loader (see ``api/modules/loader.py`` and ``cli/module_cli.py``),
+    # NOT by ``Settings`` — the loader runs before ``Settings()`` is built
+    # so module-registered provider ids are already part of model
+    # validation. Keep that order; declaring these here would re-introduce
+    # the round-trip bug where empty ``FCC_MODULES_ENABLED=`` parses
+    # inconsistently between Pydantic and the loader.
 
     # Handle empty strings for optional string fields
     @field_validator(

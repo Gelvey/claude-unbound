@@ -586,8 +586,11 @@ when maintainers want branch-level assurance.
 1. Place the module in `~/.fcc/modules/` or set `FCC_MODULES_DIR`.
 2. Expose a `FCC_MODULE` object or a `setup_module(app, settings)` function that
    returns `api.modules.Module`.
-3. Use the fluent builder to register providers, routers, intercepts,
-   optimization handlers, messaging platforms, or lifecycle hooks.
+3. Use the fluent builder to register providers, routers, middlewares, intercepts,
+   optimization handlers, reroute strategies, system directives, token counters,
+   admin UI tabs, typed settings, CLI subcommands, MCP server backends, trace
+   listeners, messaging platforms, or lifecycle hooks. See the full surface in
+   [docs/MODULES.md](docs/MODULES.md).
 4. Add tests under [tests/api/](tests/api/) using the `modules_dir` and
    `reset_loaded_modules` fixtures.
 5. Document examples and constraints in [docs/MODULES.md](docs/MODULES.md).

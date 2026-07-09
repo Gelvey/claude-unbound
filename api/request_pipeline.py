@@ -37,6 +37,9 @@ from .web_tools.streaming import stream_web_server_tool_response
 TokenCounter = Callable[[list[Any], str | list[Any] | None, list[Any] | None], int]
 ProviderGetter = Callable[[str], BaseProvider]
 MessageIntercept = Callable[[RoutedMessagesRequest], object | None]
+RerouteStrategy = Callable[
+    [RoutedMessagesRequest, Settings], RoutedMessagesRequest | None
+]
 
 # Providers that use ``/chat/completions`` + Anthropic-to-OpenAI conversion.
 _OPENAI_CHAT_UPSTREAM_IDS = frozenset(
@@ -104,6 +107,12 @@ def _require_non_empty_messages(messages: list[Any]) -> None:
 
 # Module-level mutable list so custom modules can contribute intercepts.
 _MESSAGE_INTERCEPTS: list[MessageIntercept] = []
+# Module-level mutable list so custom modules can contribute reroute strategies.
+_REROUTE_STRATEGIES: list[RerouteStrategy] = []
+# Module-level override slot; non-None value replaces ``get_token_count``.
+_MODULE_TOKEN_COUNTER: TokenCounter | None = None
+# Module-level system-prompt directives applied to every MessagesRequest.
+_MODULE_SYSTEM_DIRECTIVES: list[str] = []
 
 
 def add_message_intercepts(
@@ -122,6 +131,58 @@ def remove_message_intercepts(intercepts: Iterable[MessageIntercept]) -> None:
             _MESSAGE_INTERCEPTS.remove(intercept)
 
 
+def add_reroute_strategies(strategies: Iterable[RerouteStrategy]) -> None:
+    """Append reroute strategies (run after model resolve, before long-context fallback)."""
+
+    _REROUTE_STRATEGIES.extend(strategies)
+
+
+def remove_reroute_strategies(strategies: Iterable[RerouteStrategy]) -> None:
+    """Remove previously appended reroute strategies (used by tests)."""
+
+    for strategy in strategies:
+        with contextlib.suppress(ValueError):
+            _REROUTE_STRATEGIES.remove(strategy)
+
+
+def get_reroute_strategies() -> list[RerouteStrategy]:
+    """Return a copy of the registered reroute strategies."""
+
+    return list(_REROUTE_STRATEGIES)
+
+
+def set_module_token_counter(counter: TokenCounter | None) -> None:
+    """Override the request token counter (last-registered wins)."""
+
+    global _MODULE_TOKEN_COUNTER
+    _MODULE_TOKEN_COUNTER = counter
+
+
+def reset_module_token_counter() -> None:
+    """Clear the module-supplied token counter (used by tests)."""
+
+    set_module_token_counter(None)
+
+
+def get_module_token_counter() -> TokenCounter | None:
+    """Return the module-supplied token counter, or None if none registered."""
+
+    return _MODULE_TOKEN_COUNTER
+
+
+def set_module_system_directives(directives: list[str]) -> None:
+    """Replace the module-supplied system directives."""
+
+    global _MODULE_SYSTEM_DIRECTIVES
+    _MODULE_SYSTEM_DIRECTIVES = list(directives)
+
+
+def get_module_system_directives() -> list[str]:
+    """Return a copy of the module-supplied system directives."""
+
+    return list(_MODULE_SYSTEM_DIRECTIVES)
+
+
 class ApiRequestPipeline:
     """Coordinate API request intercepts, routing, and provider stream execution."""
 
@@ -130,14 +191,19 @@ class ApiRequestPipeline:
         settings: Settings,
         provider_getter: ProviderGetter,
         model_router: ModelRouter | None = None,
-        token_counter: TokenCounter = get_token_count,
+        token_counter: TokenCounter | None = None,
         responses_adapter: OpenAIResponsesAdapter | None = None,
     ) -> None:
         self._settings = settings
         self._provider_getter = provider_getter
         self._model_router = model_router or ModelRouter(settings)
-        self._token_counter = token_counter
         self._responses_adapter = responses_adapter or OpenAIResponsesAdapter()
+        # Module-supplied token counter takes precedence over the default;
+        # explicit constructor argument still wins over both for tests.
+        module_token_counter = get_module_token_counter()
+        self._token_counter: TokenCounter = (
+            token_counter or module_token_counter or get_token_count
+        )
         # Start with the built-in intercepts, then any intercepts contributed by
         # custom modules. This is a copy so per-instance mutation is isolated.
         self._message_intercepts: list[MessageIntercept] = [
@@ -151,6 +217,7 @@ class ApiRequestPipeline:
         try:
             _require_non_empty_messages(request_data.messages)
             routed = self._model_router.resolve_messages_request(request_data)
+            routed = self._apply_module_reroutes(routed)
             routed = self._maybe_reroute_long_context(routed)
             self._reject_unsupported_server_tools(routed)
 
@@ -200,6 +267,7 @@ class ApiRequestPipeline:
             response_request = MessagesRequest(**anthropic_payload)
             _require_non_empty_messages(response_request.messages)
             routed = self._model_router.resolve_messages_request(response_request)
+            routed = self._apply_module_reroutes(routed)
             routed = self._maybe_reroute_long_context(routed)
             self._reject_unsupported_server_tools(routed)
 
@@ -336,6 +404,31 @@ class ApiRequestPipeline:
         )
         return RoutedMessagesRequest(request=routed.request, resolved=resolved)
 
+    def _apply_module_reroutes(
+        self, routed: RoutedMessagesRequest
+    ) -> RoutedMessagesRequest:
+        """Run module-supplied reroute strategies in registration order.
+
+        Each strategy may return a rewritten :class:`RoutedMessagesRequest`
+        or ``None`` to leave the request unchanged. The first non-None
+        result wins; later strategies still run against the rewritten
+        request, so modules can compose.
+        """
+
+        for strategy in get_reroute_strategies():
+            try:
+                rewritten = strategy(routed, self._settings)
+            except Exception as exc:
+                _log_unexpected_pipeline_exception(
+                    self._settings,
+                    exc,
+                    context="MODULE_REROUTE_ERROR",
+                )
+                continue
+            if rewritten is not None:
+                routed = rewritten
+        return routed
+
     def _reject_unsupported_server_tools(self, routed: RoutedMessagesRequest) -> None:
         if routed.resolved.provider_id not in _OPENAI_CHAT_UPSTREAM_IDS:
             return
@@ -409,6 +502,8 @@ class ApiRequestPipeline:
             append_system_directive(
                 routed.request, self._settings.concise_output_directive
             )
+        for directive in get_module_system_directives():
+            append_system_directive(routed.request, directive)
 
         provider = self._provider_getter(routed.resolved.provider_id)
         provider.preflight_stream(

@@ -179,6 +179,38 @@ async def admin_status(request: Request):
     }
 
 
+@router.get("/admin/api/modules/tabs")
+async def admin_module_tabs(request: Request):
+    """Return the list of custom admin tabs contributed by loaded modules."""
+    require_loopback_admin(request)
+    from api.modules.contracts import AdminTabSpec
+
+    raw = getattr(request.app.state, "admin_tabs", []) or []
+    tabs: list[dict[str, str | None]] = []
+    for tab in raw:
+        if isinstance(tab, AdminTabSpec):
+            tabs.append(
+                {
+                    "id": tab.id,
+                    "label": tab.label,
+                    "title": tab.title,
+                    "html": tab.html,
+                    "mount_js": tab.mount_js,
+                }
+            )
+        elif isinstance(tab, dict):
+            tabs.append(
+                {
+                    "id": tab.get("id", ""),
+                    "label": tab.get("label", ""),
+                    "title": tab.get("title", ""),
+                    "html": tab.get("html", ""),
+                    "mount_js": tab.get("mount_js"),
+                }
+            )
+    return {"tabs": tabs}
+
+
 @router.get("/admin/api/providers/local-status")
 async def local_provider_status(request: Request):
     require_loopback_admin(request)
@@ -551,7 +583,13 @@ def _resolve_masked_envs(
 async def get_mcp_config(request: Request):
     require_loopback_admin(request)
     config, _ = load_mcp_config()
-    # Serialize to dict for masking
+    # Surface module-registered MCP backends so they show up in the admin UI;
+    # user-saved entries still take precedence over module-supplied ones.
+    from .mcp_config import merge_module_backends
+
+    module_backends = list(getattr(request.app.state, "mcp_servers", []) or [])
+    merged_servers = merge_module_backends(config.servers, module_backends)
+
     config_dict = {
         "router_socket": config.router_socket,
         "router_pidfile": config.router_pidfile,
@@ -559,7 +597,7 @@ async def get_mcp_config(request: Request):
         "health_timeout_s": config.health_timeout_s,
         "servers": {
             name: srv.model_dump(exclude={"name"})
-            for name, srv in config.servers.items()
+            for name, srv in merged_servers.items()
         },
         "shared_servers": {
             name: srv.model_dump(exclude={"name"})

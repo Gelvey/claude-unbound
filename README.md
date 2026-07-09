@@ -643,8 +643,11 @@ CI also enforces a ban on `# type: ignore` / `# ty: ignore` suppressions; `scrip
 - Extend OpenAI Responses conversion in `core/openai_responses/` when Codex adds new request or stream shapes.
 - Register provider metadata in `config.provider_catalog` and factory wiring in `providers.registry`.
 - Add messaging platforms by implementing the `MessagingPlatform` interface in `messaging/`.
-- Drop custom modules into `~/.fcc/modules/` to add providers, routes, pipeline
-  hooks, or messaging platforms without editing this repo. See
+- Drop custom modules into `~/.fcc/modules/` to add providers, routes,
+  HTTP middlewares, request intercepts, reroute strategies, system
+  directives, token counters, admin UI tabs, typed settings, CLI
+  subcommands, MCP backends, trace listeners, messaging platforms, or
+  lifecycle hooks without editing this repo. See
   [docs/MODULES.md](docs/MODULES.md).
 
 ## Contributing

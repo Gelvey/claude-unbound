@@ -80,6 +80,68 @@ def serve() -> None:
         kill_all_best_effort()
 
 
+def dispatch() -> None:
+    """Dispatch a `fcc <subcommand> [args...]` invocation.
+
+    Recognises module-registered CLI subcommands (via
+    ``cli.module_cli.collect_cli_commands``) and built-in dispatch
+    commands (``init``, ``serve``, ``claude``, ``codex``). Unknown
+    subcommands print the available list and exit 2.
+    """
+
+    from cli.module_cli import collect_cli_commands
+
+    args = sys.argv[1:]
+    subcommand = args[0] if args else None
+
+    if subcommand is None or subcommand in {"-h", "--help", "help"}:
+        _print_dispatch_help()
+        return
+
+    if subcommand == "init":
+        init()
+        return
+    if subcommand == "serve":
+        serve()
+        return
+    if subcommand == "claude":
+        launch_claude(args[1:])
+        return
+    if subcommand == "codex":
+        launch_codex(args[1:])
+        return
+
+    for command in collect_cli_commands():
+        if command.name == subcommand:
+            raise SystemExit(command.handler(args[1:]))
+
+    print(f"Unknown fcc subcommand: {subcommand}", file=sys.stderr)
+    _print_dispatch_help(to_stderr=True)
+    raise SystemExit(2)
+
+
+def _print_dispatch_help(*, to_stderr: bool = False) -> None:
+    """Print the list of built-in + module-registered fcc subcommands."""
+
+    from cli.module_cli import collect_cli_commands
+
+    out = sys.stderr if to_stderr else sys.stdout
+    print("Usage: fcc <subcommand> [args...]", file=out)
+    print("", file=out)
+    print("Built-in subcommands:", file=out)
+    print("  init    Scaffold ~/.fcc/.env from the bundled template.", file=out)
+    print("  serve   Start the FastAPI proxy (alias for `fcc-server`).", file=out)
+    print("  claude  Launch Claude Code pointed at this proxy.", file=out)
+    print("  codex   Launch Codex CLI pointed at this proxy.", file=out)
+
+    module_commands = collect_cli_commands()
+    if module_commands:
+        print("", file=out)
+        print("Module subcommands:", file=out)
+        for command in module_commands:
+            print(f"  {command.name:<8} {command.help}", file=out)
+
+
 def _admin_browser_open_enabled() -> bool:
     """Whether to open /admin when the server becomes reachable (FCC_OPEN_BROWSER).
 
