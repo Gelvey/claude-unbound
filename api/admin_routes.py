@@ -918,6 +918,22 @@ async def composio_test_connection(payload: ComposioTestPayload, request: Reques
 
     try:
         return await _test_composio_connection(api_key)
+    except BaseExceptionGroup as exc:
+        # mcp.client.streamable_http uses asyncio.TaskGroup internally, so
+        # subprocess failures (network, auth, stream timeout, ...) surface as
+        # an ExceptionGroup. PEP 654 keeps such groups outside ``Exception``
+        # so callers must opt in; recursively flatten to expose the real
+        # cause(s) since groups can nest.
+        leaves: list[BaseException] = []
+        stack: list[BaseException] = list(exc.exceptions)
+        while stack:
+            current = stack.pop()
+            if isinstance(current, BaseExceptionGroup):
+                stack.extend(current.exceptions)
+            else:
+                leaves.append(current)
+        detail = "; ".join(str(leaf) for leaf in leaves)
+        return {"ok": False, "error": _sanitize_composio_error(api_key, detail)}
     except Exception as exc:
         return {"ok": False, "error": _sanitize_composio_error(api_key, str(exc))}
 

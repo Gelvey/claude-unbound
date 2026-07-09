@@ -865,6 +865,83 @@ def test_composio_test_redacts_key_from_error(monkeypatch, tmp_path):
     assert "[REDACTED]" in body["error"]
 
 
+def test_composio_test_flattens_exception_group(monkeypatch, tmp_path):
+    """Composio ``streamable_http_client`` raises ``ExceptionGroup`` on failure.
+
+    Regression: PEP 654 keeps ExceptionGroups outside ``Exception``, so the
+    prior ``except Exception`` clause never caught them and the user saw an
+    opaque ``unhandled errors in a TaskGroup (1 sub-exception)`` message. The
+    endpoint must unpack the group and surface (and redact) the real cause.
+    """
+    _set_home(monkeypatch, tmp_path)
+    _seed_config(tmp_path)
+    app = create_app(lifespan_enabled=False)
+    secret = "leaky_secret_token"
+
+    async def mock_test_connection(api_key: str):
+        # Mirror how asyncio.TaskGroup wraps a single sub-exception.
+        raise ExceptionGroup(
+            "unhandled errors in a TaskGroup",
+            [RuntimeError(f"HTTP error for token {secret}: invalid")],
+        )
+
+    with patch("api.admin_routes._test_composio_connection", mock_test_connection):
+        response = _local_client(app).post(
+            "/admin/api/mcp/composio/test",
+            json={"api_key": secret},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    # The opaque group message MUST be replaced by the leaf cause.
+    assert "unhandled errors in a TaskGroup" not in body["error"]
+    assert "HTTP error for token" in body["error"]
+    # Key redaction still applies to the unwrapped inner message.
+    assert secret not in body["error"]
+    assert "[REDACTED]" in body["error"]
+
+
+def test_composio_test_flattens_nested_exception_group(monkeypatch, tmp_path):
+    """Nested ExceptionGroups must be flattened into their leaves.
+
+    Async helpers can nest cancellation / failure groups; ensure every leaf
+    message is surfaced, joined with ``; ``, and key-redacted.
+    """
+    _set_home(monkeypatch, tmp_path)
+    _seed_config(tmp_path)
+    app = create_app(lifespan_enabled=False)
+    secret = "leaky_secret_token_a"
+
+    async def mock_test_connection(api_key: str):
+        raise ExceptionGroup(
+            "outer",
+            [
+                ExceptionGroup(
+                    "inner",
+                    [
+                        RuntimeError(f"first: {secret}"),
+                        RuntimeError("second: unrelated"),
+                    ],
+                )
+            ],
+        )
+
+    with patch("api.admin_routes._test_composio_connection", mock_test_connection):
+        response = _local_client(app).post(
+            "/admin/api/mcp/composio/test",
+            json={"api_key": secret},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert "first:" in body["error"]
+    assert "second:" in body["error"]
+    assert secret not in body["error"]
+    assert "[REDACTED]" in body["error"]
+
+
 def test_composio_test_uses_httpx_timeout(monkeypatch):
     """_test_composio_connection must apply a non-None httpx timeout.
 
