@@ -60,7 +60,9 @@ fi
 
 # ── Preflight sync check ─────────────────────────────────────────────────────
 # Fetches origin, shows recent commits, and offers a force-pull before opening
-# the main kitty window.
+# the main kitty window. The preflight runs in its own dedicated kitty window
+# (blocking on the kitty PID) so the prompt is always interactive — even when
+# launcher.sh was invoked outside a terminal.
 PREFLIGHT_DIR=$(mktemp -d "${TMPDIR:-/tmp}/fcc-preflight.XXXXXX") || {
     notify critical "Claude Unbound" "Failed to create preflight temp directory"
     exit 1
@@ -140,8 +142,43 @@ sleep 1
 PREFLIGHT_EOF
 chmod +x "$PREFLIGHT_SCRIPT"
 
-if ! bash "$PREFLIGHT_SCRIPT"; then
-    echo "[fcc] WARNING: preflight sync check failed, continuing with local checkout"
+# Run the preflight. When launcher.sh was invoked from an interactive
+# terminal (stdout + stdin are TTYs) we print the preflight directly to
+# stdout, matching the original behaviour. When invoked from a non-terminal
+# context (e.g. a .desktop shortcut) the prompt would otherwise be lost,
+# so we open a dedicated kitty window that runs the preflight script and
+# `wait` for the user to dismiss it before the main tabs can open.
+if [ -t 1 ] && [ -t 0 ]; then
+    if ! bash "$PREFLIGHT_SCRIPT"; then
+        echo "[fcc] WARNING: preflight sync check failed, continuing with local checkout" >&2
+    fi
+else
+    PREFLIGHT_SOCKET="${XDG_RUNTIME_DIR:-/tmp}/fcc-preflight-kitty-$$-$(date +%s%N 2>/dev/null || date +%s).sock"
+
+    kitty \
+        --config NONE \
+        --listen-on "unix:$PREFLIGHT_SOCKET" \
+        --override "allow_remote_control=socket-only" \
+        --title "Claude Unbound — Preflight" \
+        bash -c "$PREFLIGHT_SCRIPT; printf '\nPress any key to launch Claude Unbound... '; read -rn 1; exit 0" &
+
+    PREFLIGHT_KITTY_PID=$!
+    sleep 0.5
+    if ! kill -0 "$PREFLIGHT_KITTY_PID" 2>/dev/null; then
+        notify critical "Claude Unbound" "Pre-flight kitty window failed to start"
+        rm -rf "$PREFLIGHT_DIR"
+        exit 1
+    fi
+
+    # The inner bash exits via `exit 0` once the user presses a key (success
+    # path) or via non-zero if the window crashed. Treat any non-zero wait
+    # result as a non-fatal warning so the main tabs still launch.
+    wait "$PREFLIGHT_KITTY_PID" 2>/dev/null || {
+        if [ -t 2 ]; then
+            echo "[fcc] WARNING: preflight sync check did not complete cleanly, continuing with local checkout" >&2
+        fi
+        notify critical "Claude Unbound" "Pre-flight sync check did not complete cleanly — continuing"
+    }
 fi
 rm -rf "$PREFLIGHT_DIR"
 
