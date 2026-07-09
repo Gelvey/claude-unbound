@@ -3,17 +3,18 @@
 from __future__ import annotations
 
 import contextlib
-import importlib.util
 import os
-from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from dotenv import dotenv_values
 from loguru import logger
 
-from config.paths import modules_dir_path
-
+from ._discovery import (
+    discover_module_paths,
+    load_python_module,
+    modules_dir,
+    modules_enabled,
+)
 from .contracts import (
     Module,
     ModuleCliCommand,
@@ -27,51 +28,6 @@ if TYPE_CHECKING:
 
     from config.settings import Settings
 
-_MODULE_FILE_PREFIX = "claude_unbound_module_"
-
-
-def _dotenv_value(key: str) -> str | None:
-    """Read a raw value from the same .env files Pydantic Settings will use.
-
-    Later ``get_settings()`` re-reads these files through Pydantic; this
-    helper gives us ``modules_enabled`` / ``modules_dir`` before the full
-    model (and its provider-id validation) is instantiated.
-    """
-
-    from config.settings import _env_files
-
-    for env_file in _env_files():
-        if not env_file.is_file():
-            continue
-        try:
-            values = dotenv_values(env_file)
-        except OSError:
-            continue
-        if key in values:
-            value = values[key]
-            return "" if value is None else value
-    return None
-
-
-def _modules_enabled_pre() -> bool:
-    """Return whether module loading requested before Settings exists."""
-
-    value = _dotenv_value("FCC_MODULES_ENABLED")
-    if value is None:
-        value = os.environ.get("FCC_MODULES_ENABLED")
-    if value is None:
-        return True
-    return value.strip().lower() not in {"", "false", "0", "no", "off"}
-
-
-def _modules_dir_pre() -> Path:
-    """Return the modules directory before Settings exists."""
-
-    value = _dotenv_value("FCC_MODULES_DIR") or os.environ.get("FCC_MODULES_DIR")
-    if value:
-        return Path(os.path.expanduser(value))
-    return modules_dir_path()
-
 
 def _load_verbosity_pre() -> bool:
     """Return whether module-load failures should print full tracebacks.
@@ -81,62 +37,14 @@ def _load_verbosity_pre() -> bool:
     module load failures — even though Settings has not been built yet.
     """
 
+    from ._discovery import _dotenv_value
+
     value = _dotenv_value("LOG_API_ERROR_TRACEBACKS")
     if value is None:
         value = os.environ.get("LOG_API_ERROR_TRACEBACKS")
     if value is None:
         return False
     return value.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _path_to_module_name(path: Path) -> str:
-    """Create a deterministic, unique module name for a file/package path."""
-
-    escaped = path.resolve().as_posix().replace("/", "_").replace(".", "_")
-    return f"{_MODULE_FILE_PREFIX}{escaped}"
-
-
-def _is_module_path(path: Path) -> bool:
-    """Return True for loadable module files/packages."""
-
-    if path.name.startswith("_"):
-        return False
-    if not path.exists():
-        return False
-    return (path.is_file() and path.suffix == ".py") or (
-        path.is_dir() and (path / "__init__.py").is_file()
-    )
-
-
-def _discover_module_paths(modules_dir: Path) -> list[Path]:
-    """Discover candidate top-level module files and packages."""
-
-    if not modules_dir.is_dir():
-        return []
-
-    candidates = [entry for entry in modules_dir.iterdir() if _is_module_path(entry)]
-    candidates.sort(key=lambda p: p.name)
-    return candidates
-
-
-def _load_python_module(path: Path) -> Any:
-    """Import a Python file or package from an arbitrary path."""
-
-    module_name = _path_to_module_name(path)
-    if path.is_file():
-        spec = importlib.util.spec_from_file_location(module_name, path)
-    else:
-        init_file = path / "__init__.py"
-        spec = importlib.util.spec_from_file_location(
-            module_name, init_file, submodule_search_locations=[str(path)]
-        )
-
-    if spec is None or spec.loader is None:
-        raise ModuleLoadError(f"Cannot create module spec for {path}")
-
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def _extract_module(
@@ -194,6 +102,8 @@ class ModuleManager:
         self._middlewares: list[type] = []
         # Single token-counter slot (last-registered wins).
         self._token_counter: Any = None
+        # Verbose error logging is computed once and reused during registration.
+        self._verbose: bool = False
 
     @classmethod
     def load_for_app(
@@ -209,19 +119,21 @@ class ModuleManager:
         """
 
         manager = cls()
-        verbose = _load_verbosity_pre()
+        manager._verbose = _load_verbosity_pre()
 
-        if not _modules_enabled_pre():
+        if not modules_enabled():
             logger.debug("Custom modules disabled via FCC_MODULES_ENABLED")
             return manager
 
-        modules_dir = _modules_dir_pre()
-        if not modules_dir.is_dir():
-            logger.debug("Custom modules directory does not exist: {}", modules_dir)
+        modules_dir_path = modules_dir()
+        if not modules_dir_path.is_dir():
+            logger.debug(
+                "Custom modules directory does not exist: {}", modules_dir_path
+            )
             return manager
 
-        for path in _discover_module_paths(modules_dir):
-            module = manager._load_one(path, app, settings, verbose=verbose)
+        for path in discover_module_paths(modules_dir_path):
+            module = manager._load_one(path, app, settings)
             if module is None:
                 label = path.stem if path.is_file() else path.name
                 manager.failed.append(label)
@@ -245,7 +157,7 @@ class ModuleManager:
             "Custom modules loaded: {} success, {} failed (from {})",
             len(manager.modules),
             len(manager.failed),
-            modules_dir,
+            modules_dir_path,
         )
         return manager
 
@@ -254,22 +166,22 @@ class ModuleManager:
         path: Path,
         app: FastAPI,
         settings: Settings | None,
-        *,
-        verbose: bool,
     ) -> Module | None:
         """Import a single path and return its Module, or None on failure."""
 
         label = path.stem if path.is_file() else path.name
         try:
-            raw_module = _load_python_module(path)
+            raw_module = load_python_module(path)
         except Exception as exc:
-            _log_error(f"Failed to import module '{label}'", exc, verbose=verbose)
+            _log_error(f"Failed to import module '{label}'", exc, verbose=self._verbose)
             return None
 
         try:
             module = _extract_module(raw_module, app, settings)
         except Exception as exc:
-            _log_error(f"Failed to configure module '{label}'", exc, verbose=verbose)
+            _log_error(
+                f"Failed to configure module '{label}'", exc, verbose=self._verbose
+            )
             return None
 
         if not isinstance(module, Module):
@@ -349,7 +261,7 @@ class ModuleManager:
                 _log_error(
                     f"Module '{module.name}' could not register provider '{provider_id}'",
                     exc,
-                    verbose=_load_verbosity_pre(),
+                    verbose=self._verbose,
                 )
 
     def _register_routers(
@@ -363,7 +275,7 @@ class ModuleManager:
                 _log_error(
                     f"Module '{module.name}' could not register router",
                     exc,
-                    verbose=_load_verbosity_pre(),
+                    verbose=self._verbose,
                 )
 
     def _register_middlewares(self, module: Module) -> None:
@@ -383,7 +295,7 @@ class ModuleManager:
                 _log_error(
                     f"Module '{module.name}' could not register message intercepts",
                     exc,
-                    verbose=_load_verbosity_pre(),
+                    verbose=self._verbose,
                 )
 
         if module.optimization_handlers:
@@ -396,7 +308,7 @@ class ModuleManager:
                 _log_error(
                     f"Module '{module.name}' could not register optimization handlers",
                     exc,
-                    verbose=_load_verbosity_pre(),
+                    verbose=self._verbose,
                 )
 
         if module.reroute_strategies:
@@ -409,7 +321,7 @@ class ModuleManager:
                 _log_error(
                     f"Module '{module.name}' could not register reroute strategies",
                     exc,
-                    verbose=_load_verbosity_pre(),
+                    verbose=self._verbose,
                 )
 
         if module.token_counter_override is not None:
@@ -434,7 +346,7 @@ class ModuleManager:
                 _log_error(
                     f"Module '{module.name}' could not register messaging platform '{name}'",
                     exc,
-                    verbose=_load_verbosity_pre(),
+                    verbose=self._verbose,
                 )
 
     def _register_admin_tabs(self, module: Module) -> None:
@@ -494,7 +406,14 @@ class ModuleManager:
             return
         from config.module_settings import rebuild_module_settings
 
-        rebuild_module_settings(self._settings_fields)
+        try:
+            rebuild_module_settings(self._settings_fields)
+        except Exception as exc:
+            _log_error(
+                "Module settings model could not be built",
+                exc,
+                verbose=self._verbose,
+            )
 
     def apply_middlewares(self, app: FastAPI) -> None:
         """Phase 2: register every stashed module middleware on the app.
@@ -511,7 +430,7 @@ class ModuleManager:
                 _log_error(
                     "Module middleware could not be applied",
                     exc,
-                    verbose=_load_verbosity_pre(),
+                    verbose=self._verbose,
                 )
 
     def admin_tabs(self) -> list[Any]:
@@ -545,7 +464,7 @@ class ModuleManager:
                     _log_error(
                         f"Module '{module.name}' startup hook failed",
                         exc,
-                        verbose=_load_verbosity_pre(),
+                        verbose=self._verbose,
                     )
 
     async def run_shutdown(self, app: FastAPI, settings: Settings) -> None:
@@ -559,7 +478,7 @@ class ModuleManager:
                     _log_error(
                         f"Module '{module.name}' shutdown hook failed",
                         exc,
-                        verbose=_load_verbosity_pre(),
+                        verbose=self._verbose,
                     )
 
     def reset(self) -> None:
@@ -627,11 +546,6 @@ class ModuleManager:
         self._mcp_servers.clear()
         self._trace_listeners.clear()
         self._middlewares.clear()
-
-
-def list_module_dependencies() -> Iterable[type]:
-    """Re-export hook so test-only imports of the loader's helpers stay local."""
-    return ()
 
 
 __all__ = [

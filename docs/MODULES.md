@@ -21,6 +21,7 @@ Override with environment variables:
 ```bash
 FCC_MODULES_ENABLED=true          # default true
 FCC_MODULES_DIR=/path/to/modules  # default ~/.fcc/modules
+FCC_MODULES_STRICT=false          # default false; true makes module startup hook failures fatal
 ```
 
 These are read by the module loader, **not** by `config.settings.Settings`,

@@ -141,6 +141,12 @@ class AppRuntime:
 
     async def shutdown(self) -> None:
         verbose = self.settings.log_api_error_tracebacks
+
+        logger.info("Shutdown requested, cleaning up...")
+        # Run module shutdown hooks while core services are still alive so
+        # modules can flush state through the provider registry / messaging.
+        await self._run_module_shutdown_hooks()
+
         if self.message_handler is not None:
             try:
                 self.message_handler.session_store.flush_pending_save()
@@ -153,7 +159,6 @@ class AppRuntime:
                         type(e).__name__,
                     )
 
-        logger.info("Shutdown requested, cleaning up...")
         if self.messaging_platform:
             await best_effort(
                 "messaging_platform.stop",
@@ -173,7 +178,6 @@ class AppRuntime:
                 log_verbose_errors=verbose,
             )
         await self._shutdown_limiter()
-        await self._run_module_shutdown_hooks()
         logger.info("Server shut down cleanly")
 
     async def _run_module_shutdown_hooks(self) -> None:
@@ -318,21 +322,27 @@ class AppRuntime:
             )
 
     async def _run_module_startup_hooks(self) -> None:
-        """Run any custom-module startup hooks attached to the app."""
+        """Run any custom-module startup hooks attached to the app.
+
+        Non-strict mode logs and continues so a misbehaving module does not
+        prevent the rest of the server from starting. Strict mode re-raises
+        without logging here; the outer startup exception handler logs once.
+        """
 
         module_manager = getattr(self.app.state, "modules", None)
         if module_manager is None:
             return
+        strict = os.environ.get("FCC_MODULES_STRICT", "").lower() in {
+            "1",
+            "true",
+            "yes",
+        }
         try:
             await module_manager.run_startup(self.app, self.settings)
         except Exception as exc:
-            log_startup_failure(self.settings, exc)
-            if os.environ.get("FCC_MODULES_STRICT", "").lower() in {
-                "1",
-                "true",
-                "yes",
-            }:
+            if strict:
                 raise
+            log_startup_failure(self.settings, exc)
 
     def _publish_state(self) -> None:
         self.app.state.messaging_platform = self.messaging_platform

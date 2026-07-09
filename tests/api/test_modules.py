@@ -56,6 +56,25 @@ def test_discovery_ignores_private_and_non_python(
     assert not manager.failed
 
 
+def test_distinct_module_paths_get_distinct_synthetic_names(
+    modules_dir: Path, module_manager_factory, reset_loaded_modules
+):
+    """Paths that collide under naive underscore escaping must load separately."""
+
+    modules_dir.joinpath("a_b.py").write_text(
+        'from api.modules import module\nFCC_MODULE = module("first")'
+    )
+    modules_dir.joinpath("a-b.py").write_text(
+        'from api.modules import module\nFCC_MODULE = module("second")'
+    )
+
+    _app, manager = module_manager_factory()
+    reset_loaded_modules(manager)
+
+    names = {m.name for m in manager.modules}
+    assert names == {"first", "second"}
+
+
 def test_load_failure_logs_and_continues(
     modules_dir: Path, module_manager_factory, reset_loaded_modules, caplog
 ):
@@ -506,6 +525,118 @@ def test_module_setting_reads_from_env(
     settings = get_module_settings()
     token = getattr(settings, "my_plugin_token")  # noqa: B009
     assert token == "secret123"
+
+
+def test_module_setting_default_none_becomes_optional(
+    modules_dir: Path, module_manager_factory, reset_loaded_modules, monkeypatch
+):
+    """A None default with a non-Optional type must not crash validation."""
+
+    _write_module(
+        modules_dir,
+        "settings_none_default",
+        """
+        from api.modules import Module, ModuleSettingSpec
+        FCC_MODULE = Module(
+            name="settings_none_default",
+            settings_fields=[
+                ModuleSettingSpec(
+                    alias="MY_OPTIONAL_INT",
+                    type=int,
+                    default=None,
+                    description="Optional int",
+                )
+            ],
+        )
+    """,
+    )
+
+    monkeypatch.delenv("MY_OPTIONAL_INT", raising=False)
+    _app, manager = module_manager_factory()
+    reset_loaded_modules(manager)
+
+    from config.module_settings import get_module_settings
+
+    settings = get_module_settings()
+    assert getattr(settings, "my_optional_int") is None  # noqa: B009
+
+    monkeypatch.setenv("MY_OPTIONAL_INT", "42")
+    settings = get_module_settings()
+    assert getattr(settings, "my_optional_int") == 42  # noqa: B009
+
+
+def test_module_setting_duplicate_alias_last_write_wins(
+    modules_dir: Path, module_manager_factory, reset_loaded_modules, monkeypatch
+):
+    monkeypatch.setenv("SHARED_KEY", "second")
+
+    _write_module(
+        modules_dir,
+        "settings_first",
+        """
+        from api.modules import Module, ModuleSettingSpec
+        FCC_MODULE = Module(
+            name="settings_first",
+            settings_fields=[
+                ModuleSettingSpec(alias="SHARED_KEY", type=str, default="first")
+            ],
+        )
+    """,
+    )
+    _write_module(
+        modules_dir,
+        "settings_second",
+        """
+        from api.modules import Module, ModuleSettingSpec
+        FCC_MODULE = Module(
+            name="settings_second",
+            settings_fields=[
+                ModuleSettingSpec(alias="SHARED_KEY", type=str, default="second")
+            ],
+        )
+    """,
+    )
+
+    _app, manager = module_manager_factory()
+    reset_loaded_modules(manager)
+
+    from config.module_settings import get_module_settings
+
+    settings = get_module_settings()
+    # Alphabetically settings_second is loaded last, so its default wins.
+    assert getattr(settings, "shared_key") == "second"  # noqa: B009
+
+
+def test_module_setting_reserved_alias_is_skipped(
+    modules_dir: Path, module_manager_factory, reset_loaded_modules, caplog
+):
+    """A reserved alias is skipped with a warning; other fields still load."""
+
+    _write_module(
+        modules_dir,
+        "settings_reserved",
+        """
+        from api.modules import Module, ModuleSettingSpec
+        FCC_MODULE = Module(
+            name="settings_reserved",
+            settings_fields=[
+                ModuleSettingSpec(alias="MODEL_CONFIG", type=str, default="x"),
+                ModuleSettingSpec(alias="GOOD_KEY", type=str, default="ok"),
+            ],
+        )
+    """,
+    )
+
+    with caplog.at_level("WARNING"):
+        _app, manager = module_manager_factory()
+    reset_loaded_modules(manager)
+
+    from config.module_settings import get_module_settings
+
+    settings = get_module_settings()
+    assert getattr(settings, "good_key") == "ok"  # noqa: B009
+    assert any("MODEL_CONFIG" in r.message for r in caplog.records)
+    assert "reserved" in caplog.text.lower()
 
 
 # ---------------------------------------------------------------------------

@@ -17,19 +17,34 @@ extra cache is used.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, get_args
 
+from loguru import logger
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .settings import _env_files
 
 _MODULE_FIELDS: list[Any] = []
 
+# Names that would collide with BaseSettings machinery when used as model attrs.
+_RESERVED_FIELD_NAMES = frozenset(
+    {"model_config", "__annotations__", "__module__", "__qualname__", "__doc__"}
+)
+
 
 def _module_env_files() -> tuple[str, ...]:
     """Dotenv files the dynamic ModuleSettings reads from, as plain strings."""
 
     return tuple(str(p) for p in _env_files())
+
+
+def _type_accepts_none(tp: Any) -> bool:
+    """Return True when ``tp`` already includes ``None`` as a valid value."""
+
+    if tp is type(None):
+        return True
+    type_args = get_args(tp)
+    return type(None) in type_args
 
 
 def _build_model() -> type[BaseSettings]:
@@ -48,11 +63,24 @@ def _build_model() -> type[BaseSettings]:
     annotations: dict[str, Any] = {}
     for spec in _MODULE_FIELDS:
         field_name = spec.alias.lower()
-        if field_name in annotations:
-            # Last write wins; the loader de-duplicates within a single load.
+        if field_name in _RESERVED_FIELD_NAMES:
+            logger.warning(
+                "Module setting alias '{}' resolves to reserved name '{}'; skipping",
+                spec.alias,
+                field_name,
+            )
             continue
-        namespace[field_name] = spec.default
-        annotations[field_name] = spec.type
+
+        field_type = spec.type
+        default_value = spec.default
+        # A default of None with a non-Optional type would crash model validation
+        # whenever the env var is unset. Treat the field as Optional instead.
+        if default_value is None and not _type_accepts_none(field_type):
+            field_type = field_type | None
+
+        # Last write wins on duplicate aliases (matches rebuild_module_settings docstring).
+        namespace[field_name] = default_value
+        annotations[field_name] = field_type
     namespace["__annotations__"] = annotations
 
     return type("ModuleSettings", (BaseSettings,), namespace)
