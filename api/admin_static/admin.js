@@ -2365,19 +2365,51 @@ function renderGraphifyView(status, projects, health) {
       indexBtn.disabled = true;
       indexBtn.textContent = "Indexing...";
       const pathB64 = graphifyPathB64(project.path);
+      let pollInterval = null;
       try {
         const result = await api(`/admin/api/graphify/projects/${pathB64}/index`, {
           method: "POST",
           body: "{}",
         });
-        showMessage(
-          result.success ? `Indexed ${project.name || project.path}` : result.error || "Index failed",
-          result.success ? "ok" : "error",
-        );
-        await loadGraphifyView();
+        if (!result.success || result.status === "already_running") {
+          showMessage(
+            result.status === "already_running"
+              ? "Indexing is already running"
+              : result.error || "Index failed",
+            result.success ? "ok" : "error",
+          );
+        }
+        pollInterval = setInterval(async () => {
+          try {
+            const task = await api(
+              `/admin/api/graphify/projects/${pathB64}/index/status`,
+            );
+            if (!task) return;
+            if (task.status === "indexing") {
+              indexBtn.textContent = "Indexing...";
+              return;
+            }
+            clearInterval(pollInterval);
+            pollInterval = null;
+            showMessage(
+              task.status === "ready"
+                ? `Indexed ${project.name || project.path}`
+                : task.error_message || "Index failed",
+              task.status === "ready" ? "ok" : "error",
+            );
+            await loadGraphifyView();
+          } catch (error) {
+            clearInterval(pollInterval);
+            pollInterval = null;
+            showMessage(`Index status failed: ${error.message}`, "error");
+            await loadGraphifyView();
+          }
+        }, 1000);
       } catch (error) {
         showMessage(`Index failed: ${error.message}`, "error");
-      } finally {
+      }
+      // Only reset the button label when the interval has completed.
+      if (!pollInterval) {
         indexBtn.disabled = false;
         indexBtn.textContent = "Index";
       }

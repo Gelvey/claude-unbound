@@ -26,7 +26,7 @@ from .projects import (
     save_project_registry,
     update_project_status,
 )
-from .router import restart_mcp_router_async
+from .router import reload_mcp_router_async, restart_mcp_router_async
 
 _GRAPHIFY_PACKAGE = "graphifyy[mcp]"
 
@@ -51,6 +51,8 @@ class GraphifyManager:
         self._base_url: str | None = None
         self._python_path: str | None = None
         self._last_error: str | None = None
+        self._indexing_tasks: dict[str, asyncio.Task[dict[str, Any]]] = {}
+        self._watcher: Any | None = None
 
     @property
     def port(self) -> int | None:
@@ -126,6 +128,7 @@ class GraphifyManager:
         self._base_url = f"http://127.0.0.1:{port}"
 
         add_graphify_mcp_backend(port, self._settings.graphify_api_key)
+        await self._notify_router_reload()
 
         env = os.environ.copy()
         env["GRAPHIFY_API_KEY"] = self._settings.graphify_api_key or ""
@@ -156,6 +159,7 @@ class GraphifyManager:
                 port,
                 python,
             )
+            self._start_watcher()
             if self._settings.graphify_auto_index_on_start:
                 await self._auto_index_projects()
             return True
@@ -166,6 +170,7 @@ class GraphifyManager:
 
     async def stop(self) -> None:
         """Stop Graphify and remove its MCP backend."""
+        await self._stop_watcher()
         process = self._process
         self._process = None
         if process and process.returncode is None:
@@ -244,7 +249,24 @@ class GraphifyManager:
             }
 
         python = setup_result["python"]
-        graph_out = Path(project.path) / project.graphify_out / "graph.json"
+        repo_path = Path(project.path)
+
+        max_bytes = getattr(self._settings, "graphify_max_project_bytes", 0)
+        if max_bytes > 0:
+            size = _directory_size(repo_path)
+            if size > max_bytes:
+                error = (
+                    f"Project size ({_format_bytes(size)}) exceeds "
+                    f"GRAPHIFY_MAX_PROJECT_BYTES ({_format_bytes(max_bytes)})"
+                )
+                registry = load_project_registry()
+                update_project_status(
+                    registry, project.path, status="error", error_message=error
+                )
+                save_project_registry(registry)
+                return {"success": False, "error": error}
+
+        graph_out = repo_path / project.graphify_out / "graph.json"
         mode = "update" if graph_out.exists() else "extract"
         registry = load_project_registry()
         project_ref = update_project_status(registry, project.path, status="indexing")
@@ -289,6 +311,48 @@ class GraphifyManager:
             "stderr": stderr_text,
         }
 
+    async def start_index_project(self, project: GraphifyProject) -> dict[str, Any]:
+        """Start indexing *project* in the background.
+
+        Returns immediately with the task status so the admin UI can poll
+        progress instead of blocking on a long-running ``graphify extract``.
+        """
+        existing = self._indexing_tasks.get(project.path)
+        if existing is not None and not existing.done():
+            return {
+                "success": True,
+                "status": "already_running",
+                "path": project.path,
+            }
+        task = asyncio.create_task(self._run_index_project(project))
+        self._indexing_tasks[project.path] = task
+        return {"success": True, "status": "started", "path": project.path}
+
+    async def _run_index_project(self, project: GraphifyProject) -> dict[str, Any]:
+        try:
+            return await self.index_project(project)
+        finally:
+            self._indexing_tasks.pop(project.path, None)
+
+    def get_index_task_status(self, path: str) -> dict[str, Any] | None:
+        """Return in-progress status for a background indexing task."""
+        task = self._indexing_tasks.get(path)
+        if task is None:
+            return None
+        if task.done():
+            try:
+                result = task.result()
+            except Exception as exc:
+                return {"path": path, "status": "error", "error_message": str(exc)}
+            status = "ready" if result.get("success") else "error"
+            return {
+                "path": path,
+                "status": status,
+                "result": result,
+                "error_message": result.get("error", ""),
+            }
+        return {"path": path, "status": "indexing"}
+
     async def _auto_index_projects(self) -> None:
         registry = load_project_registry()
         for project in registry.projects:
@@ -310,10 +374,53 @@ class GraphifyManager:
                 await asyncio.sleep(0.4)
         return False
 
+    async def _notify_router_reload(self) -> None:
+        """Tell the MCP router to reload config; fall back to process restart."""
+        reload_result = await reload_mcp_router_async()
+        if reload_result.get("reloaded"):
+            logger.info("GRAPHIFY_MANAGER: MCP router reloaded via hot-reload")
+            return
+
+        logger.info(
+            "GRAPHIFY_MANAGER: hot reload unavailable ({}), restarting router",
+            reload_result.get("error"),
+        )
+        restart_result = await restart_mcp_router_async()
+        if not restart_result.get("restarted"):
+            logger.warning(
+                "GRAPHIFY_MANAGER: router restart failed: {}",
+                restart_result.get("error"),
+            )
+
+    def _start_watcher(self) -> None:
+        if not getattr(self._settings, "graphify_auto_reindex", False):
+            return
+        try:
+            from .watcher import GraphifyProjectWatcher
+        except Exception:
+            logger.warning("GRAPHIFY_MANAGER: watcher import failed")
+            return
+        self._watcher = GraphifyProjectWatcher(self)
+        self._watcher.start()
+
+    async def _stop_watcher(self) -> None:
+        watcher = self._watcher
+        self._watcher = None
+        if watcher is None:
+            return
+        try:
+            await watcher.stop()
+        except Exception as exc:
+            logger.warning(
+                "GRAPHIFY_MANAGER: watcher stop failed: {}: {}",
+                type(exc).__name__,
+                exc,
+            )
+
     async def _remove_backend_silently(self) -> None:
         try:
             remove_graphify_mcp_backend()
-            await restart_mcp_router_async()
+            await self._notify_router_reload()
         except Exception as exc:
             logger.warning(
                 "GRAPHIFY_MANAGER: failed to remove MCP backend: {}: {}",
@@ -350,6 +457,35 @@ def _find_free_port() -> int:
         return int(s.getsockname()[1])
 
 
+def _directory_size(path: Path) -> int:
+    """Return the total byte size of *path*, following directories recursively."""
+    total = 0
+    try:
+        for entry in os.scandir(path):
+            if entry.is_symlink():
+                continue
+            if entry.is_dir(follow_symlinks=False):
+                total += _directory_size(Path(entry.path))
+            else:
+                try:
+                    total += entry.stat().st_size
+                except OSError:
+                    continue
+    except OSError:
+        pass
+    return total
+
+
+def _format_bytes(n: int) -> str:
+    """Return a human-readable size string for *n* bytes."""
+    value = float(n)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if value < 1024.0:
+            return f"{value:.1f} {unit}"
+        value /= 1024.0
+    return f"{value:.1f} PB"
+
+
 async def _ensure_graphify_venv(venv_dir: Path) -> str:
     """Create an isolated venv and install ``graphifyy[mcp]`` if missing."""
     python = _venv_python_path(venv_dir)
@@ -368,9 +504,8 @@ async def _ensure_graphify_venv(venv_dir: Path) -> str:
     )
     _stdout, stderr = await proc.communicate()
     if proc.returncode != 0:
-        raise RuntimeError(
-            f"Failed to create Graphify venv: {stderr.decode('utf-8', errors='replace')}"
-        )
+        decoded = stderr.decode("utf-8", errors="replace")
+        raise RuntimeError(f"Failed to create Graphify venv: {decoded}")
 
     pip = str(
         Path(python).parent / ("pip.exe" if sys.platform.startswith("win") else "pip")

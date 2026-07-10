@@ -49,6 +49,9 @@ from mcp.shared.message import SessionMessage
 
 log = logging.getLogger("mcp-router")
 
+# Set by ``main()`` from the --config argument so reloads load the same file.
+_CONFIG_PATH: Path | None = None
+
 # Canonical config path is ~/.fcc/mcp_config.json, matching the ~/.fcc/.env
 # pattern. Overridable via MCP_ROUTER_CONFIG env var for testing or custom setups.
 CONFIG_PATH = Path(
@@ -170,6 +173,17 @@ CONTROL_TOOL_SCHEMAS: dict[str, types.Tool] = {
             "required": ["name"],
         },
     ),
+    "reload_servers": types.Tool(
+        name="reload_servers",
+        description=(
+            "Reload the backend registry from mcp_config.json without "
+            "restarting the router. New backends become available, removed "
+            "backends are deactivated, and changed backends are updated. "
+            "After calling this, the LLM MUST call `tools/list` to refresh "
+            "its view of available tools."
+        ),
+        inputSchema={"type": "object", "properties": {}},
+    ),
 }
 
 
@@ -263,6 +277,10 @@ def _build_server(backends: dict[str, Backend]) -> Server:
             result = await _deactivate(target, backends)
             return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
 
+        if name == "reload_servers":
+            result = await _reload_config(backends)
+            return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+
         # Dynamic tool: must be prefixed with backend name
         parts = _unprefix(name)
         if parts is None or parts[0] not in backends:
@@ -342,6 +360,52 @@ async def _activate(name: str, backends: dict[str, Backend]) -> dict[str, Any]:
         "name": name,
         "tool_count": len(backend.tools),
         "tool_names": list(backend.tools.keys()),
+    }
+
+
+async def _reload_config(backends: dict[str, Backend]) -> dict[str, Any]:
+    """Reload backend registry from disk, updating the shared backends dict."""
+    if _CONFIG_PATH is None:
+        return {"ok": False, "error": "router config path is not set"}
+    try:
+        new_backends, _ = load_config(_CONFIG_PATH)
+    except Exception as exc:
+        return {"ok": False, "error": f"failed to load config: {exc}"}
+
+    removed: list[str] = []
+    for old_name in list(backends.keys()):
+        if old_name not in new_backends:
+            if backends[old_name]._session is not None:
+                await _deactivate(old_name, backends)
+            del backends[old_name]
+            removed.append(old_name)
+
+    added: list[str] = []
+    updated: list[str] = []
+    for name, new_backend in new_backends.items():
+        if name not in backends:
+            backends[name] = new_backend
+            added.append(name)
+            continue
+        old_backend = backends[name]
+        if old_backend.cfg != new_backend.cfg:
+            if old_backend._session is not None:
+                await _deactivate(name, backends)
+            backends[name] = new_backend
+            updated.append(name)
+
+    log.info(
+        "Reloaded config from %s: added=%s updated=%s removed=%s",
+        _CONFIG_PATH,
+        added,
+        updated,
+        removed,
+    )
+    return {
+        "ok": True,
+        "added": added,
+        "updated": updated,
+        "removed": removed,
     }
 
 
@@ -586,11 +650,14 @@ def main() -> int:
         handlers=handlers,
     )
 
+    global _CONFIG_PATH
+
     if not Path(args.config).exists():
         log.error("Config not found: %s", args.config)
         return 2
 
-    backends, _raw_cfg = load_config(Path(args.config))
+    _CONFIG_PATH = Path(args.config)
+    backends, _raw_cfg = load_config(_CONFIG_PATH)
     log.info(
         "Loaded %d backends from %s: %s",
         len(backends),

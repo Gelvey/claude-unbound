@@ -235,6 +235,16 @@ class Settings(BaseSettings):
         default=False,
         validation_alias="GRAPHIFY_AUTO_INDEX_ON_START",
     )
+    graphify_max_project_bytes: int = Field(
+        default=10 * 1024 * 1024 * 1024,  # 10 GiB
+        validation_alias="GRAPHIFY_MAX_PROJECT_BYTES",
+        description="Maximum allowed project size in bytes. 0 disables the guard.",
+    )
+    graphify_auto_reindex: bool = Field(
+        default=False,
+        validation_alias="GRAPHIFY_AUTO_REINDEX",
+        description="Poll registered projects and re-index when files change.",
+    )
 
     # ==================== Model ====================
     # All Claude model requests are mapped to this single model (fallback)

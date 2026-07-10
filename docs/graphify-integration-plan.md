@@ -59,7 +59,7 @@ The router (`scripts/mcp/mcp_router.py`) **loads `mcp_config.json once at startu
 - restart the router subprocess directly, or
 - surface a restart-hint banner in the admin UI telling the user to click **Restart MCP Router**.
 
-A future enhancement could add a JSON-RPC reload endpoint to the router, but that is out of scope for the initial integration.
+Implemented in `scripts/mcp/mcp_router.py` as a JSON-RPC `reload_servers` control tool; `GraphifyManager` uses it automatically with a process-restart fallback for older router versions.
 
 ### 2. Dependency mechanism
 
@@ -353,10 +353,10 @@ Add a new view container after the `view-freebuff` block:
 
 **Goal:** reliability and UX refinements.
 
-- [ ] Add disk-usage guards and `GRAPHIFY_MAX_PROJECT_BYTES`.
-- [ ] Add watchdog-style auto-reindex when repo files change (optional).
-- [ ] Add live indexing progress in admin UI.
-- [ ] Explore adding a hot-reload endpoint to `mcp_router.py` so future backends do not need a full router restart.
+- [x] Add disk-usage guards and `GRAPHIFY_MAX_PROJECT_BYTES`.
+- [x] Add watchdog-style auto-reindex when repo files change (optional, enabled via `GRAPHIFY_AUTO_REINDEX`).
+- [x] Add live indexing progress in admin UI.
+- [x] Add a hot-reload endpoint to `mcp_router.py` so backend changes do not require a full router restart.
 
 ---
 

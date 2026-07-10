@@ -29,5 +29,7 @@ def graphify_settings():
         graphify_python_path="",
         graphify_api_key="secret-key",
         graphify_auto_index_on_start=False,
+        graphify_auto_reindex=False,
+        graphify_max_project_bytes=10 * 1024 * 1024 * 1024,
         anthropic_auth_token="",
     )

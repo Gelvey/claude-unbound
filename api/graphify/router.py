@@ -11,10 +11,68 @@ from typing import Any
 
 from loguru import logger
 
+from api.mcp_config import _parse_jsonrpc_results, _send_jsonrpc_async, load_mcp_config
+
 
 def mcp_scripts_dir() -> Path:
     """Return the directory containing the MCP start/stop scripts."""
     return Path(__file__).resolve().parents[2] / "scripts" / "mcp"
+
+
+def _expand_router_socket(socket_path: str) -> str:
+    """Expand leading ``~`` in the router socket path."""
+    if socket_path.startswith("~"):
+        return socket_path.replace("~", str(Path.home()), 1)
+    return socket_path
+
+
+async def reload_mcp_router_async() -> dict[str, Any]:
+    """Ask the running MCP router to reload its config via the ``reload_servers`` tool.
+
+    Returns ``{"reloaded": True, ...}`` when the router acknowledges the reload,
+    or ``{"reloaded": False, "error": ...}`` when the router is not reachable or
+    the reload was rejected. This is faster than a full process restart.
+    """
+    config, _ = load_mcp_config()
+    socket_path = _expand_router_socket(config.router_socket)
+    if not Path(socket_path).exists():
+        return {"reloaded": False, "error": "router socket not found"}
+
+    messages = [
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "graphify-manager", "version": "0"},
+            },
+        },
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+        {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {"name": "reload_servers", "arguments": {}},
+        },
+    ]
+    try:
+        resp = await _send_jsonrpc_async(socket_path, messages)
+    except Exception as exc:
+        return {"reloaded": False, "error": f"router communication failed: {exc}"}
+
+    results = _parse_jsonrpc_results(resp)
+    if not results:
+        return {"reloaded": False, "error": "no response from router"}
+
+    result = results[-1]
+    if not isinstance(result, dict) or not result.get("ok"):
+        return {
+            "reloaded": False,
+            "error": result.get("error", "router reload was rejected"),
+        }
+    return {"reloaded": True, "summary": result}
 
 
 async def restart_mcp_router_async(

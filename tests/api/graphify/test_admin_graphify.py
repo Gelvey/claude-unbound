@@ -130,7 +130,11 @@ async def test_index_project_routes_to_manager(
     )
 
     manager = AsyncMock()
-    manager.index_project.return_value = {"success": True, "mode": "extract"}
+    manager.start_index_project.return_value = {
+        "success": True,
+        "status": "started",
+        "path": project_path,
+    }
     client.app.state.graphify_manager = manager
 
     path_b64 = (
@@ -142,4 +146,4 @@ async def test_index_project_routes_to_manager(
 
     assert response.status_code == 200
     assert response.json()["success"] is True
-    manager.index_project.assert_awaited_once()
+    manager.start_index_project.assert_awaited_once()

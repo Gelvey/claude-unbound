@@ -969,7 +969,7 @@ async def graphify_remove_project(path_b64: str, request: Request):
 
 @router.post("/admin/api/graphify/projects/{path_b64}/index")
 async def graphify_index_project(path_b64: str, request: Request):
-    """Run graphify extract/update for a project."""
+    """Run graphify extract/update for a project in the background."""
     require_loopback_admin(request)
     path = _decode_project_path(path_b64)
     registry = load_project_registry()
@@ -977,7 +977,31 @@ async def graphify_index_project(path_b64: str, request: Request):
     if not matches:
         raise HTTPException(status_code=404, detail="Project not found")
     manager = _get_graphify_manager(request)
-    return await manager.index_project(matches[0])
+    return await manager.start_index_project(matches[0])
+
+
+@router.get("/admin/api/graphify/projects/{path_b64}/index/status")
+async def graphify_index_project_status(path_b64: str, request: Request):
+    """Return live status for an in-progress project index task."""
+    require_loopback_admin(request)
+    path = _decode_project_path(path_b64)
+    registry = load_project_registry()
+    project = next((p for p in registry.projects if p.path == path), None)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    manager = _get_graphify_manager(request)
+    task_status = manager.get_index_task_status(path)
+    result: dict[str, Any] = {
+        "path": path,
+        "status": project.status,
+        "last_indexed": project.last_indexed.isoformat()
+        if project.last_indexed
+        else None,
+        "error_message": project.error_message,
+    }
+    if task_status is not None:
+        result["task"] = task_status
+    return result
 
 
 # ---------------------------------------------------------------------------
