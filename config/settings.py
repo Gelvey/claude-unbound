@@ -229,7 +229,31 @@ class Settings(BaseSettings):
     graphify_api_key: str = Field(
         default="",
         validation_alias="GRAPHIFY_API_KEY",
-        description="API key for Graphify HTTP transport.",
+        description=(
+            "Optional bearer-token auth for the localhost Graphify MCP HTTP "
+            "endpoint. Graphify is self-hosted; this is NOT a cloud API key. "
+            "Leave empty for no auth on the loopback server."
+        ),
+    )
+    graphify_llm_backend: str = Field(
+        default="",
+        validation_alias="GRAPHIFY_LLM_BACKEND",
+        description=(
+            "Optional LLM backend for the semantic extraction pass "
+            "(graphify extract) over docs/PDFs/images and community naming: "
+            "claude|openai|gemini|deepseek|kimi|ollama|azure. Leave empty to "
+            "auto-detect from the environment, or for code-only indexing. "
+            "Use 'ollama' for a fully-local, no-API-key setup."
+        ),
+    )
+    graphify_llm_api_key: str = Field(
+        default="",
+        validation_alias="GRAPHIFY_LLM_API_KEY",
+        description=(
+            "API key for the configured GRAPHIFY_LLM_BACKEND, injected into the "
+            "extractor subprocess as the backend's env var. Ignored when "
+            "GRAPHIFY_LLM_BACKEND is empty. Ollama accepts any non-empty value."
+        ),
     )
     graphify_auto_index_on_start: bool = Field(
         default=False,

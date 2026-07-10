@@ -1826,6 +1826,13 @@ function renderFreebuffView(status, health) {
   const statusSection = document.createElement("div");
   statusSection.id = "freebuff-status-section";
 
+  // -- Session hygiene / suspension-risk warning (always shown) --
+  const suspensionWarning = document.createElement("div");
+  suspensionWarning.className = "mcp-status-banner warning-banner";
+  suspensionWarning.innerHTML =
+    '<span class="status-pill warn">⚠ Suspension Risk</span> Freebuff free-tier models can get your account suspended in long sessions. Start a new session periodically; don\'t reuse one conversation for hundreds of turns.';
+  statusSection.appendChild(suspensionWarning);
+
   // -- Sudo warning banner --
   if (status.requires_sudo) {
     const sudoWarning = document.createElement("div");
@@ -2253,11 +2260,18 @@ function renderGraphifyView(status, projects, health) {
   banner.className = "mcp-status-banner";
   const runState = status.running ? "ok" : status.last_error ? "error" : "neutral";
   const runLabel = status.running ? 'Running' : status.last_error ? 'Error' : 'Stopped';
-  const portInfo = status.port ? ` on port ${status.port}` : "";
-  const pythonInfo = status.python ? ` (${status.python})` : "";
+  const portInfo = status.port ? ` · port ${status.port}` : "";
+  const pythonInfo = status.python ? ` · ${status.python}` : "";
   banner.innerHTML =
-    `<span class="status-pill ${runState}">${runLabel}</span> Graphify${portInfo}${pythonInfo}`;
+    `<span class="status-pill ${runState}">${runLabel}</span> Graphify · local MCP server (isolated venv, no Docker)${portInfo}${pythonInfo}`;
   statusSection.appendChild(banner);
+
+  const explainer = document.createElement("p");
+  explainer.className = "provider-meta";
+  explainer.style.cssText = "margin: 4px 0 12px; opacity: 0.8;";
+  explainer.textContent =
+    "Self-hosted knowledge-graph MCP server. Setup installs graphify into an isolated venv (~/.fcc/graphify/venv); Start launches a local HTTP MCP process on 127.0.0.1 and registers it as an MCP backend. No container and no cloud API key required — leave the transport key empty for loopback access.";
+  statusSection.appendChild(explainer);
 
   if (status.last_error) {
     const errorBanner = document.createElement("div");
@@ -2269,34 +2283,54 @@ function renderGraphifyView(status, projects, health) {
   const actions = document.createElement("div");
   actions.className = "mcp-action-row";
 
-  const setupBtn = graphifyActionButton("Setup", async () => {
-    const result = await api("/admin/api/graphify/setup", { method: "POST" });
-    showMessage(
-      result.ready
-        ? `Graphify ready — ${result.method} (${result.python})`
-        : result.error || "Setup failed",
-      result.ready ? "ok" : "error",
-    );
-    await loadGraphifyView();
-  });
-  const startBtn = graphifyActionButton("Start", async () => {
-    const result = await api("/admin/api/graphify/start", { method: "POST" });
-    showMessage(result.success ? "Graphify started" : result.error || "Start failed", result.success ? "ok" : "error");
-    await loadGraphifyView();
-  });
-  const stopBtn = graphifyActionButton("Stop", async () => {
-    await api("/admin/api/graphify/stop", { method: "POST" });
-    showMessage("Graphify stopped", "ok");
-    await loadGraphifyView();
-  });
-  const restartBtn = graphifyActionButton("Restart", async () => {
-    const result = await api("/admin/api/graphify/restart", { method: "POST" });
-    showMessage(result.success ? "Graphify restarted" : "Restart failed", result.success ? "ok" : "error");
-    await loadGraphifyView();
-  });
-  const refreshBtn = graphifyActionButton("Refresh", async () => {
-    await loadGraphifyView();
-  });
+  const setupBtn = graphifyActionButton(
+    "Setup",
+    async () => {
+      const result = await api("/admin/api/graphify/setup", { method: "POST" });
+      showMessage(
+        result.ready
+          ? `Graphify ready — ${result.method} (${result.python})`
+          : result.error || "Setup failed",
+        result.ready ? "ok" : "error",
+      );
+      await loadGraphifyView();
+    },
+    "Install or verify graphify in an isolated venv (~/.fcc/graphify/venv)",
+  );
+  const startBtn = graphifyActionButton(
+    "Start",
+    async () => {
+      const result = await api("/admin/api/graphify/start", { method: "POST" });
+      showMessage(result.success ? "Graphify started" : result.error || "Start failed", result.success ? "ok" : "error");
+      await loadGraphifyView();
+    },
+    "Launch the local Graphify MCP HTTP server and register it as an MCP backend",
+  );
+  const stopBtn = graphifyActionButton(
+    "Stop",
+    async () => {
+      await api("/admin/api/graphify/stop", { method: "POST" });
+      showMessage("Graphify stopped", "ok");
+      await loadGraphifyView();
+    },
+    "Stop the local Graphify MCP server and unregister the MCP backend",
+  );
+  const restartBtn = graphifyActionButton(
+    "Restart",
+    async () => {
+      const result = await api("/admin/api/graphify/restart", { method: "POST" });
+      showMessage(result.success ? "Graphify restarted" : "Restart failed", result.success ? "ok" : "error");
+      await loadGraphifyView();
+    },
+    "Stop then start the local Graphify MCP server",
+  );
+  const refreshBtn = graphifyActionButton(
+    "Refresh",
+    async () => {
+      await loadGraphifyView();
+    },
+    "Reload Graphify status, health, and projects",
+  );
 
   actions.append(setupBtn, startBtn, stopBtn, restartBtn, refreshBtn);
   statusSection.appendChild(actions);
@@ -2435,11 +2469,12 @@ function renderGraphifyView(status, projects, health) {
   container.appendChild(statusSection);
 }
 
-function graphifyActionButton(label, onClick) {
+function graphifyActionButton(label, onClick, title) {
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "secondary-button";
   btn.textContent = label;
+  if (title) btn.title = title;
   btn.addEventListener("click", async () => {
     btn.disabled = true;
     const original = btn.textContent;

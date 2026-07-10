@@ -25,6 +25,18 @@ def _async_process_mock(returncode: int | None = None) -> Any:
     return process
 
 
+def _mcp_ok_response() -> Any:
+    """A mocked Streamable HTTP initialize response (200 + SSE-framed JSON)."""
+    return MagicMock(
+        status_code=200,
+        text=(
+            "event: message\n"
+            'data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05",'
+            '"capabilities":{},"serverInfo":{"name":"graphify","version":"1.28.1"}}}'
+        ),
+    )
+
+
 def _build_manager(graphify_settings: Any, **overrides: Any) -> GraphifyManager:
     from config.settings import Settings
 
@@ -81,9 +93,9 @@ async def test_manager_start_stops_writes_and_removes_backend(
             return_value={"restarted": True},
         ) as restart_router,
         patch(
-            "api.graphify.manager.httpx.AsyncClient.get",
+            "api.graphify.manager.httpx.AsyncClient.post",
             new_callable=AsyncMock,
-            return_value=MagicMock(status_code=200, json=MagicMock(return_value={})),
+            return_value=_mcp_ok_response(),
         ),
     ):
         started = await manager.start()
@@ -114,6 +126,41 @@ async def test_manager_start_stops_writes_and_removes_backend(
 
 
 @pytest.mark.asyncio
+async def test_manager_start_does_not_register_backend_when_not_ready(
+    graphify_tmp_home: Path, graphify_settings: Any
+) -> None:
+    """Reorder guarantee: the MCP backend is not published until the server is ready."""
+    manager = _build_manager(graphify_settings, graphify_python_path="/fake/python")
+    process = _async_process_mock(returncode=None)
+
+    with (
+        patch("api.graphify.manager._is_graphify_importable", return_value=True),
+        patch("api.graphify.manager._find_free_port", return_value=9876),
+        patch(
+            "api.graphify.manager.asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
+            return_value=process,
+        ),
+        patch(
+            "api.graphify.manager.GraphifyManager._wait_for_ready",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+        patch("api.graphify.manager.add_graphify_mcp_backend") as add_backend,
+        patch(
+            "api.graphify.manager.reload_mcp_router_async",
+            new_callable=AsyncMock,
+            return_value={"reloaded": True},
+        ),
+    ):
+        started = await manager.start()
+
+    assert started is False
+    assert manager.last_error == "Graphify health check timed out"
+    add_backend.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_manager_health_checks_running_server(
     graphify_tmp_home: Path, graphify_settings: Any
 ) -> None:
@@ -134,11 +181,9 @@ async def test_manager_health_checks_running_server(
             return_value={"reloaded": True, "summary": {}},
         ),
         patch(
-            "api.graphify.manager.httpx.AsyncClient.get",
+            "api.graphify.manager.httpx.AsyncClient.post",
             new_callable=AsyncMock,
-            return_value=MagicMock(
-                status_code=200, json=MagicMock(return_value={"ok": True})
-            ),
+            return_value=_mcp_ok_response(),
         ),
     ):
         await manager.start()
@@ -146,6 +191,29 @@ async def test_manager_health_checks_running_server(
 
     assert health["status"] == "healthy"
     assert health["http_status"] == 200
+    assert health["server_info"]["name"] == "graphify"
+
+
+@pytest.mark.asyncio
+async def test_manager_health_check_reports_unhealthy_on_non_200(
+    graphify_tmp_home: Path, graphify_settings: Any
+) -> None:
+    manager = _build_manager(graphify_settings, graphify_python_path="/fake/python")
+    manager._base_url = "http://127.0.0.1:9876"
+
+    with patch(
+        "api.graphify.manager.httpx.AsyncClient.post",
+        new_callable=AsyncMock,
+        return_value=MagicMock(
+            status_code=406,
+            text='data: {"jsonrpc":"2.0","error":{"code":-32600,"message":"Not Acceptable: Client must accept text/event-stream"}}',
+        ),
+    ):
+        health = await manager.health_check()
+
+    assert health["status"] == "unhealthy"
+    assert health["http_status"] == 406
+    assert "Not Acceptable" in health["error"]
 
 
 @pytest.mark.asyncio
@@ -320,3 +388,103 @@ async def test_manager_start_index_project_returns_already_running(
         assert first["status"] == "started"
         second = await manager.start_index_project(project)
         assert second["status"] == "already_running"
+
+
+# ---------------------------------------------------------------------------
+# Probe / env helpers
+# ---------------------------------------------------------------------------
+
+
+def test_parse_sse_data_extracts_json_payload() -> None:
+    from api.graphify.manager import _parse_sse_data
+
+    text = (
+        "event: message\n"
+        'data: {"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"graphify"}}}\n'
+    )
+    data = _parse_sse_data(text)
+    assert isinstance(data, dict)
+    assert data["result"]["serverInfo"]["name"] == "graphify"
+
+
+def test_parse_sse_data_returns_none_when_no_data_line() -> None:
+    from api.graphify.manager import _parse_sse_data
+
+    assert _parse_sse_data("") is None
+    assert _parse_sse_data("event: message\n") is None
+
+
+def test_parse_sse_data_skips_malformed_data_lines() -> None:
+    from api.graphify.manager import _parse_sse_data
+
+    text = 'data: not-json\ndata: {"ok": true}\n'
+    data = _parse_sse_data(text)
+    assert data == {"ok": True}
+
+
+def test_extract_jsonrpc_error_returns_message() -> None:
+    from api.graphify.manager import _extract_jsonrpc_error
+
+    assert _extract_jsonrpc_error({"error": {"message": "boom"}}) == "boom"
+
+
+def test_extract_jsonrpc_error_returns_none_without_error() -> None:
+    from api.graphify.manager import _extract_jsonrpc_error
+
+    assert _extract_jsonrpc_error({"result": {}}) is None
+    assert _extract_jsonrpc_error(None) is None
+
+
+def test_manager_probe_headers_include_auth_when_key_set(
+    graphify_tmp_home: Path, graphify_settings: Any
+) -> None:
+    manager = _build_manager(graphify_settings, graphify_api_key="tok")
+    headers = manager._mcp_probe_headers()
+    assert headers["Accept"] == "application/json, text/event-stream"
+    assert headers["Content-Type"] == "application/json"
+    assert headers["Authorization"] == "Bearer tok"
+
+
+def test_manager_probe_headers_omit_auth_when_no_key(
+    graphify_tmp_home: Path, graphify_settings: Any
+) -> None:
+    manager = _build_manager(graphify_settings, graphify_api_key="")
+    headers = manager._mcp_probe_headers()
+    assert "Authorization" not in headers
+
+
+def test_manager_extract_env_injects_llm_key(
+    graphify_tmp_home: Path, graphify_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "preexisting")
+    manager = _build_manager(
+        graphify_settings,
+        graphify_llm_backend="ollama",
+        graphify_llm_api_key="dummy",
+    )
+    env = manager._extract_env()
+    assert env["OPENAI_API_KEY"] == "preexisting"
+    assert env["OLLAMA_API_KEY"] == "dummy"
+
+
+def test_manager_extract_env_without_llm_backend_inherits_only(
+    graphify_tmp_home: Path, graphify_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+    manager = _build_manager(graphify_settings)
+    env = manager._extract_env()
+    assert "OLLAMA_API_KEY" not in env
+
+
+def test_manager_extract_env_ignores_unknown_backend(
+    graphify_tmp_home: Path, graphify_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    manager = _build_manager(
+        graphify_settings,
+        graphify_llm_backend="nope",
+        graphify_llm_api_key="dummy",
+    )
+    env = manager._extract_env()
+    assert "ANTHROPIC_API_KEY" not in env

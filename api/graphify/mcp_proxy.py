@@ -1,56 +1,32 @@
-"""Graphify MCP tool-call injection helpers.
+"""Graphify MCP tool metadata for per-session project routing.
 
 Claude Unbound tags each Claude Code session with a repo path via the
-``ANTHROPIC_AUTH_TOKEN`` suffix.  This module provides the helper that
-injects the decoded ``project_path`` argument into Graphify MCP tool calls
-so the Graphify server can route them to the correct project graph.
+``ANTHROPIC_AUTH_TOKEN`` suffix (``:graphify-repo:<base64>``). Because the MCP
+meta-router is a single shared Unix-socket process with no per-connection
+context, the repo path cannot be injected at the wire level. Instead
+``api/request_pipeline.py`` appends a system directive naming these tools and
+the resolved ``project_path`` so the model includes ``project_path`` in its
+Graphify tool calls; graphify's server routes each call to
+``<project_path>/graphify-out/graph.json`` (see ``graphify/serve.py``:
+"Multi-project support: every tool accepts an optional project_path").
+
+``GRAPHIFY_TOOL_NAMES`` is the canonical list of tools the directive covers and
+must stay in lockstep with the tools graphify's server actually exposes.
 """
 
 from __future__ import annotations
-
-from typing import Any
 
 GRAPHIFY_TOOL_NAMES: frozenset[str] = frozenset(
     {
         "query_graph",
         "get_node",
+        "get_neighbors",
+        "get_community",
         "god_nodes",
-        "shortest_path",
-        "affected",
         "graph_stats",
+        "shortest_path",
+        "list_prs",
+        "get_pr_impact",
+        "triage_prs",
     }
 )
-
-
-_GRAPHIFY_PROJECT_PATH_ARG = "project_path"
-
-
-def inject_project_path(
-    arguments: dict[str, Any],
-    project_path: str | None,
-    *,
-    tool_name: str | None = None,
-) -> dict[str, Any]:
-    """Return a copy of *arguments* with ``project_path`` injected when known.
-
-    The injection is performed for Graphify tools and only when a non-empty
-    *project_path* is provided.  Existing ``project_path`` values already set
-    by the client are preserved to allow explicit overrides.
-    """
-    if not project_path:
-        return arguments
-    if tool_name is not None and tool_name not in GRAPHIFY_TOOL_NAMES:
-        return arguments
-    if _GRAPHIFY_PROJECT_PATH_ARG in arguments:
-        return arguments
-    updated = dict(arguments)
-    updated[_GRAPHIFY_PROJECT_PATH_ARG] = project_path
-    return updated
-
-
-def is_graphify_tool(tool_name: str) -> bool:
-    """Return whether *tool_name* is a Graphify tool handled by this proxy."""
-    base = tool_name
-    if "__" in tool_name:
-        base = tool_name.split("__", 1)[1]
-    return base in GRAPHIFY_TOOL_NAMES

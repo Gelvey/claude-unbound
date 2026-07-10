@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import os
 import signal
 import socket
@@ -29,6 +30,67 @@ from .projects import (
 from .router import reload_mcp_router_async, restart_mcp_router_async
 
 _GRAPHIFY_PACKAGE = "graphifyy[mcp]"
+
+# Map a configured LLM backend to the env var graphify's extractor reads for its
+# API key (see graphify/llm.py). Used so the semantic extraction pass can run
+# without leaking the key into fcc-server's own environment.
+_GRAPHIFY_LLM_ENV_KEYS: dict[str, str] = {
+    "claude": "ANTHROPIC_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
+    "kimi": "MOONSHOT_API_KEY",
+    "ollama": "OLLAMA_API_KEY",
+    "azure": "AZURE_OPENAI_API_KEY",
+}
+
+# MCP ``initialize`` request body used by the readiness/health probes. Graphify
+# serves a Streamable HTTP endpoint at /mcp that rejects plain GET with 406
+# ("Client must accept text/event-stream"); a POSTed initialize with the SSE
+# Accept header is the canonical liveness check and returns 200.
+_MCP_INITIALIZE_BODY: dict[str, Any] = {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+        "protocolVersion": "2024-11-05",
+        "capabilities": {},
+        "clientInfo": {"name": "fcc-graphify", "version": "0"},
+    },
+}
+
+
+def _parse_sse_data(text: str) -> dict[str, Any] | None:
+    """Extract the first JSON object from a Streamable HTTP SSE response body.
+
+    The graphify server answers the initialize probe with an
+    ``event: message\\ndata: {...}`` body rather than bare JSON, so a plain
+    ``response.json()`` parse fails. This pulls the ``data:`` payload.
+    """
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("data:"):
+            payload = line[len("data:") :].strip()
+            if not payload:
+                continue
+            try:
+                return json.loads(payload)
+            except json.JSONDecodeError:
+                continue
+    return None
+
+
+def _extract_jsonrpc_error(data: dict[str, Any] | None) -> str | None:
+    """Return a human-readable error message from a JSON-RPC error payload."""
+    if not isinstance(data, dict):
+        return None
+    error = data.get("error")
+    if isinstance(error, dict):
+        message = error.get("message")
+        if isinstance(message, str):
+            return message
+    return None
 
 
 class GraphifyManager:
@@ -127,9 +189,10 @@ class GraphifyManager:
         self._port = port
         self._base_url = f"http://127.0.0.1:{port}"
 
-        add_graphify_mcp_backend(port, self._settings.graphify_api_key)
-        await self._notify_router_reload()
-
+        # Spawn first, then wait for readiness *before* registering the MCP
+        # backend. This keeps the router from ever advertising a port that is
+        # not yet listening (and avoids a reload pointing clients at a dead
+        # port during the readiness window).
         env = os.environ.copy()
         env["GRAPHIFY_API_KEY"] = self._settings.graphify_api_key or ""
         try:
@@ -149,24 +212,27 @@ class GraphifyManager:
             )
         except Exception as exc:
             self._last_error = str(exc)
-            await self._remove_backend_silently()
             return False
 
-        if await self._wait_for_ready():
-            self._last_error = None
-            logger.info(
-                "GRAPHIFY_MANAGER: started port={} python={}",
-                port,
-                python,
-            )
-            self._start_watcher()
-            if self._settings.graphify_auto_index_on_start:
-                await self._auto_index_projects()
-            return True
+        if not await self._wait_for_ready():
+            self._last_error = "Graphify health check timed out"
+            await self.stop()
+            return False
 
-        self._last_error = "Graphify health check timed out"
-        await self.stop()
-        return False
+        # Server is confirmed up: publish the backend and reload the router.
+        add_graphify_mcp_backend(port, self._settings.graphify_api_key)
+        await self._notify_router_reload()
+
+        self._last_error = None
+        logger.info(
+            "GRAPHIFY_MANAGER: started port={} python={}",
+            port,
+            python,
+        )
+        self._start_watcher()
+        if self._settings.graphify_auto_index_on_start:
+            await self._auto_index_projects()
+        return True
 
     async def stop(self) -> None:
         """Stop Graphify and remove its MCP backend."""
@@ -194,25 +260,38 @@ class GraphifyManager:
         return await self.start()
 
     async def health_check(self) -> dict[str, Any]:
-        """Probe the Graphify ``/mcp`` endpoint."""
+        """Probe the Graphify ``/mcp`` endpoint with an MCP initialize request.
+
+        Graphify's Streamable HTTP server rejects a plain ``GET /mcp`` with
+        ``406 Not Acceptable``; a POSTed ``initialize`` carrying the SSE
+        ``Accept`` header is the correct liveness probe and returns 200 with an
+        SSE-framed ``serverInfo`` payload.
+        """
         if not self._base_url:
             return {"status": "not_configured", "error": "Graphify is not running"}
-        url = f"{self._base_url}/mcp"
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
-                resp = await client.get(url)
+                resp = await self._probe_mcp(client)
         except httpx.HTTPError as exc:
             return {"status": "unreachable", "error": str(exc)}
-        try:
-            data = resp.json()
-        except Exception:
-            data = None
+        data = _parse_sse_data(resp.text)
         if resp.status_code == 200:
-            return {"status": "healthy", "http_status": resp.status_code, "data": data}
+            server_info = None
+            if isinstance(data, dict):
+                result = data.get("result")
+                if isinstance(result, dict):
+                    server_info = result.get("serverInfo")
+            return {
+                "status": "healthy",
+                "http_status": resp.status_code,
+                "server_info": server_info,
+                "data": data,
+            }
         return {
             "status": "unhealthy",
             "http_status": resp.status_code,
             "data": data,
+            "error": _extract_jsonrpc_error(data) or f"HTTP {resp.status_code}",
         }
 
     def status(self) -> dict[str, Any]:
@@ -281,6 +360,7 @@ class GraphifyManager:
                 project.path,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=self._extract_env(),
             )
             stdout, stderr = await proc.communicate()
         except Exception as exc:
@@ -366,13 +446,48 @@ class GraphifyManager:
         async with httpx.AsyncClient(timeout=2.0) as client:
             while asyncio.get_event_loop().time() < deadline:
                 try:
-                    resp = await client.get(f"{self._base_url}/mcp")
+                    resp = await self._probe_mcp(client)
                     if resp.status_code == 200:
                         return True
                 except httpx.HTTPError:
                     pass
                 await asyncio.sleep(0.4)
         return False
+
+    def _mcp_probe_headers(self) -> dict[str, str]:
+        """Return headers for the MCP initialize probe, with auth when configured."""
+        headers = {
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+        }
+        if self._settings.graphify_api_key:
+            headers["Authorization"] = f"Bearer {self._settings.graphify_api_key}"
+        return headers
+
+    async def _probe_mcp(self, client: httpx.AsyncClient) -> httpx.Response:
+        """POST an MCP initialize request to the Graphify ``/mcp`` endpoint."""
+        return await client.post(
+            f"{self._base_url}/mcp",
+            json=_MCP_INITIALIZE_BODY,
+            headers=self._mcp_probe_headers(),
+        )
+
+    def _extract_env(self) -> dict[str, str]:
+        """Build the environment for ``graphify extract``/``update`` subprocesses.
+
+        Inherits the parent environment and injects the configured LLM backend
+        API key (if any) under the env var graphify's extractor reads, so the
+        semantic pass over docs/PDFs/images and community naming can run. The
+        ``GRAPHIFY_API_KEY`` transport auth is irrelevant to the indexer.
+        """
+        env = os.environ.copy()
+        backend = self._settings.graphify_llm_backend.strip().lower()
+        api_key = self._settings.graphify_llm_api_key
+        if backend and api_key:
+            env_key = _GRAPHIFY_LLM_ENV_KEYS.get(backend)
+            if env_key:
+                env[env_key] = api_key
+        return env
 
     async def _notify_router_reload(self) -> None:
         """Tell the MCP router to reload config; fall back to process restart."""

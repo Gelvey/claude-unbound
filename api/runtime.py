@@ -65,6 +65,25 @@ def warn_if_process_auth_token(settings: Settings) -> None:
         )
 
 
+def warn_if_freebuff_session_hygiene(settings: Settings) -> None:
+    """Warn that long Freebuff free-tier sessions risk upstream suspension.
+
+    Freebuff/Codebuff free models are meant for short CLI task runs.  The
+    disguise proxy mimics the CLI, but long single sessions (many turns piled
+    onto one agent run/account) still look abnormal and can trigger
+    suspension.  This is an operator nudge to start fresh sessions
+    periodically; it does not touch the request path.
+    """
+    if not getattr(settings, "freebuff_enabled", False):
+        return
+    logger.warning(
+        "FREEBUFF enabled: codebuff.com free-tier models can suspend your "
+        "account in long sessions. Start a new session periodically and avoid "
+        "reusing one conversation for hundreds of turns. The CLI disguise is "
+        "active, but session-length/volume patterns can still be flagged."
+    )
+
+
 def log_startup_failure(settings: Settings, exc: Exception) -> None:
     """Log startup failures without traceback noise unless verbose diagnostics are enabled."""
     message = startup_failure_message(settings, exc)
@@ -109,6 +128,7 @@ class AppRuntime:
         self.app.state.provider_registry = self._provider_registry
         try:
             warn_if_process_auth_token(self.settings)
+            warn_if_freebuff_session_hygiene(self.settings)
             await self._validate_configured_models_best_effort()
             self._provider_registry.start_model_list_refresh(self.settings)
             await self._start_messaging_if_configured()

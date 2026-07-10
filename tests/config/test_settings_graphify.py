@@ -29,6 +29,16 @@ from config.settings import Settings
                 "graphify_auto_index_on_start": True,
             },
         ),
+        (
+            {
+                "GRAPHIFY_LLM_BACKEND": "ollama",
+                "GRAPHIFY_LLM_API_KEY": "dummy",
+            },
+            {
+                "graphify_llm_backend": "ollama",
+                "graphify_llm_api_key": "dummy",
+            },
+        ),
     ],
 )
 def test_graphify_settings_parsing(
@@ -43,6 +53,8 @@ def test_graphify_settings_parsing(
         "GRAPHIFY_SERVER_PORT",
         "GRAPHIFY_PYTHON_PATH",
         "GRAPHIFY_API_KEY",
+        "GRAPHIFY_LLM_BACKEND",
+        "GRAPHIFY_LLM_API_KEY",
         "GRAPHIFY_AUTO_INDEX_ON_START",
     }:
         monkeypatch.delenv(key, raising=False)
@@ -52,3 +64,14 @@ def test_graphify_settings_parsing(
     settings = Settings()
     for key, value in expected.items():
         assert getattr(settings, key) == value
+
+
+def test_graphify_llm_fields_default_empty(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    for key in {"GRAPHIFY_LLM_BACKEND", "GRAPHIFY_LLM_API_KEY"}:
+        monkeypatch.delenv(key, raising=False)
+    settings = Settings()
+    assert settings.graphify_llm_backend == ""
+    assert settings.graphify_llm_api_key == ""
