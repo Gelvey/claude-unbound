@@ -12,6 +12,7 @@ from fastapi import FastAPI
 from loguru import logger
 
 from api.admin_urls import local_admin_url
+from api.graphify import GraphifyManager
 from config.settings import Settings, get_settings
 from providers.exceptions import ServiceUnavailableError
 from providers.registry import ProviderRegistry
@@ -91,6 +92,7 @@ class AppRuntime:
     messaging_platform: MessagingPlatform | None = None
     message_handler: ClaudeMessageHandler | None = None
     cli_manager: CLISessionManager | None = None
+    graphify_manager: GraphifyManager | None = field(default=None, init=False)
 
     @classmethod
     def for_app(
@@ -112,6 +114,7 @@ class AppRuntime:
             await self._start_messaging_if_configured()
             await self._run_module_startup_hooks()
             self._publish_state()
+            await self._start_graphify_if_enabled()
             logging.getLogger("uvicorn.error").info(
                 "Admin UI: %s (local-only)", admin_url
             )
@@ -169,6 +172,12 @@ class AppRuntime:
             await best_effort(
                 "cli_manager.stop_all",
                 self.cli_manager.stop_all(),
+                log_verbose_errors=verbose,
+            )
+        if self.graphify_manager is not None:
+            await best_effort(
+                "graphify_manager.stop",
+                self.graphify_manager.stop(),
                 log_verbose_errors=verbose,
             )
         if self._provider_registry is not None:
@@ -348,6 +357,26 @@ class AppRuntime:
         self.app.state.messaging_platform = self.messaging_platform
         self.app.state.message_handler = self.message_handler
         self.app.state.cli_manager = self.cli_manager
+        self.app.state.graphify_manager = self.graphify_manager
+
+    async def _start_graphify_if_enabled(self) -> None:
+        if not getattr(self.settings, "graphify_enabled", False):
+            return
+        self.graphify_manager = GraphifyManager(self.settings)
+        self.app.state.graphify_manager = self.graphify_manager
+        try:
+            started = await self.graphify_manager.start()
+            if not started:
+                logger.warning(
+                    "Graphify is enabled but failed to start: {}",
+                    self.graphify_manager.last_error,
+                )
+        except Exception as exc:
+            logger.warning(
+                "Graphify startup failed: exc_type={}: {}",
+                type(exc).__name__,
+                exc,
+            )
 
     async def _shutdown_limiter(self) -> None:
         verbose = self.settings.log_api_error_tracebacks

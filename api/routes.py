@@ -30,6 +30,7 @@ def get_request_pipeline(
             provider_type, app=request.app, settings=settings
         ),
         token_counter=get_token_count,
+        graphify_project_path=getattr(request.state, "graphify_project_path", None),
     )
 
 

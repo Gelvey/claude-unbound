@@ -161,6 +161,7 @@ class CodexCliAdapter:
         proxy_root_url: str,
         auth_token: str,
         base_env: Mapping[str, str],
+        repo_path: str | None = None,
     ) -> dict[str, str]:
         """Return a Codex environment that targets the local proxy provider."""
 
@@ -179,6 +180,7 @@ class CodexCliAdapter:
         api_url: str,
         auth_token: str,
         base_env: Mapping[str, str],
+        repo_path: str | None = None,
     ) -> dict[str, str]:
         env = _base_codex_env(base_env)
         env[_CODEX_AUTH_ENV_KEY] = auth_token.strip() or "fcc-no-auth"

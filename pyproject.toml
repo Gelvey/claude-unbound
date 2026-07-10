@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "free-claude-code"
-version = "2.19.1"
+version = "2.19.2"
 description = "Multi-provider proxy for Claude Code and Codex: routes Anthropic Messages and OpenAI Responses traffic to free, paid, or local models with prompt-cache affinity, long-context fallback routing, opt-in HTTP/2, uvloop/orjson-accelerated low-latency streaming, and cache/cost metrics passthrough"
 readme = "README.md"
 requires-python = ">=3.14.0"
@@ -40,6 +40,9 @@ fcc-claude = "cli.entrypoints:launch_claude"
 fcc-codex = "cli.entrypoints:launch_codex"
 
 [project.optional-dependencies]
+graphify = [
+    "graphifyy[mcp]>=0.9.11",
+]
 voice = [
     "grpcio>=1.81.0",
     "grpcio-tools>=1.81.0",
@@ -135,6 +138,7 @@ markers = [
 python-version = "3.14"
 
 [tool.ty.analysis]
+# Optional graphify extra: graphifyy knowledge-graph MCP server
 # Optional voice_local extra: torch, transformers, librosa for local whisper transcription
 # Optional voice extra: nvidia-riva-client for nvidia_nim transcription provider
 # MCP router (scripts/mcp/) runs in its own venv with the `mcp` SDK; those imports

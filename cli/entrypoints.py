@@ -249,6 +249,15 @@ def _migrate_legacy_env_if_missing() -> Path | None:
     return None
 
 
+def _resolve_repo_root() -> str:
+    """Return the current repository root or the current working directory."""
+    cwd = Path.cwd().resolve()
+    for path in [cwd, *cwd.parents]:
+        if (path / ".git").exists():
+            return str(path)
+    return str(cwd)
+
+
 def _claude_child_env(
     settings: Settings, base_env: Mapping[str, str]
 ) -> dict[str, str]:
@@ -258,6 +267,7 @@ def _claude_child_env(
         proxy_root_url=local_proxy_root_url(settings),
         auth_token=settings.anthropic_auth_token,
         base_env=base_env,
+        repo_path=_resolve_repo_root(),
     )
 
 
@@ -332,6 +342,7 @@ def _launch_client_cli(
         proxy_root_url=proxy_root_url,
         auth_token=settings.anthropic_auth_token,
         base_env=os.environ,
+        repo_path=_resolve_repo_root(),
     )
     process: subprocess.Popen[bytes] | None = None
     try:

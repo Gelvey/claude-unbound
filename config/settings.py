@@ -211,6 +211,31 @@ class Settings(BaseSettings):
         validation_alias="FREEBUFF_ENABLED",
     )
 
+    # ==================== Graphify Config ====================
+    graphify_enabled: bool = Field(
+        default=False,
+        validation_alias="GRAPHIFY_ENABLED",
+    )
+    graphify_server_port: int = Field(
+        default=0,
+        validation_alias="GRAPHIFY_SERVER_PORT",
+        description="0 selects a free port automatically.",
+    )
+    graphify_python_path: str = Field(
+        default="",
+        validation_alias="GRAPHIFY_PYTHON_PATH",
+        description="Optional Python interpreter to run graphify.serve.",
+    )
+    graphify_api_key: str = Field(
+        default="",
+        validation_alias="GRAPHIFY_API_KEY",
+        description="API key for Graphify HTTP transport.",
+    )
+    graphify_auto_index_on_start: bool = Field(
+        default=False,
+        validation_alias="GRAPHIFY_AUTO_INDEX_ON_START",
+    )
+
     # ==================== Model ====================
     # All Claude model requests are mapped to this single model (fallback)
     # Format: provider_type/model/name

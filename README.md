@@ -98,6 +98,7 @@ The MCP meta-router (`scripts/mcp/`) exposes multiple MCP servers through a sing
 - Optional Usage through the Claude Code VS Code extension.
 - Codex CLI and VS Code extension support through the shared `~/.codex/config.toml` provider config.
 - Optional voice-note transcription through local Whisper or NVIDIA NIM.
+- Optional **Graphify** knowledge-graph integration with per-session repo detection (`admin` → **Graphify**).
 - Local **Admin UI** at `/admin` to edit supported proxy settings, validate changes, and check providers (loopback access only).
 
 ## Quick Start
@@ -557,6 +558,32 @@ curl -fsSL "https://github.com/Gelvey/claude-unbound/blob/main/scripts/install.s
 Restart `fcc-server` after reinstalling.
 
 In the **Admin UI**, open **Messaging** and scroll to **Voice**. Turn on **Voice Notes**, choose **Whisper Device** (`cpu`, `cuda`, or `nvidia_nim`), set **Whisper Model**, and enter **Hugging Face Token** when your setup needs it. For **nvidia_nim** transcription, install the `voice` extra and set **NVIDIA NIM API Key** on the **Providers** view. The screenshot above shows the **Voice** block in the same view.
+
+### 3. Graphify Knowledge Graph
+
+Graphify adds per-project knowledge graphs to Claude Code sessions. It is disabled by default and must be enabled from **Admin UI → Graphify**.
+
+**Installation**
+
+Install the optional Graphify extra (or let the Admin UI **Setup** button install it into an isolated venv):
+
+```bash
+uv sync --extra graphify
+```
+
+**Configuration**
+
+1. Start `fcc-server` and open `/admin`.
+2. In the sidebar, choose **Graphify**.
+3. Turn on **Graphify Enabled** and click **Apply**.
+4. Click **Setup** to verify or install `graphifyy[mcp]`.
+5. Click **Start** to launch the local Graphify HTTP MCP server and register it as an MCP backend.
+6. Add one or more projects with **Add Project** (text entry; absolute path), then click **Index** to run `graphify extract`.
+7. Restart the MCP Router tab so `graphify__query_graph`, `graphify__get_node`, and the other Graphify tools appear in Claude Code.
+
+**Per-session repo detection**
+
+`fcc-claude` resolves the current repo root and appends a `:graphify-repo:<base64>` suffix to `ANTHROPIC_AUTH_TOKEN`. The proxy decodes that suffix, and the request pipeline injects a system directive telling Claude Code which `project_path` to use for Graphify tool calls. Each `fcc-claude` session can therefore target a different repo automatically.
 
 ## How It Works
 

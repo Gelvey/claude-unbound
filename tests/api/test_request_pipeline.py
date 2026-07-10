@@ -84,6 +84,53 @@ async def test_pipeline_provider_execution_passes_routed_request_and_stream_meta
     assert len(provider.preflight_calls) == 1
 
 
+@pytest.mark.asyncio
+async def test_pipeline_appends_graphify_repo_system_directive():
+    provider = FakeProvider()
+    pipeline = ApiRequestPipeline(
+        Settings(),
+        provider_getter=lambda _: provider,
+        graphify_project_path="/path/to/repo",
+    )
+    request = MessagesRequest(
+        model="nvidia_nim/test-model",
+        max_tokens=100,
+        messages=[Message(role="user", content="explain the code")],
+    )
+
+    response = pipeline.create_message(request)
+    assert isinstance(response, StreamingResponse)
+    await _streaming_body_text(response)
+
+    system = provider.requests[0].system
+    assert isinstance(system, str)
+    assert "/path/to/repo" in system
+    assert "project_path='/path/to/repo'" in system
+
+
+@pytest.mark.asyncio
+async def test_pipeline_skips_graphify_directive_without_repo_path():
+    provider = FakeProvider()
+    pipeline = ApiRequestPipeline(
+        Settings(),
+        provider_getter=lambda _: provider,
+        graphify_project_path=None,
+    )
+    request = MessagesRequest(
+        model="nvidia_nim/test-model",
+        max_tokens=100,
+        messages=[Message(role="user", content="hi")],
+    )
+
+    response = pipeline.create_message(request)
+    assert isinstance(response, StreamingResponse)
+    await _streaming_body_text(response)
+
+    system = provider.requests[0].system
+    assert isinstance(system, str)
+    assert "Graphify" not in system
+
+
 def test_pipeline_message_optimization_intercepts_before_provider_execution():
     provider_getter = MagicMock()
     pipeline = ApiRequestPipeline(Settings(), provider_getter=provider_getter)

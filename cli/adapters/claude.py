@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 from collections.abc import Iterable, Mapping
 from typing import Any
@@ -141,6 +142,7 @@ class ClaudeCliAdapter:
         proxy_root_url: str,
         auth_token: str,
         base_env: Mapping[str, str],
+        repo_path: str | None = None,
     ) -> dict[str, str]:
         """Return a Claude Code environment that targets the local proxy."""
 
@@ -155,7 +157,7 @@ class ClaudeCliAdapter:
         # Ask Claude Code to send extended-thinking requests; the proxy's
         # per-tier ENABLE_*_THINKING settings still decide what providers do.
         env.setdefault("MAX_THINKING_TOKENS", _MAX_THINKING_TOKENS)
-        env["ANTHROPIC_AUTH_TOKEN"] = _claude_auth_token(auth_token)
+        env["ANTHROPIC_AUTH_TOKEN"] = _claude_auth_token(auth_token, repo_path)
         return env
 
     def _task_env(
@@ -164,6 +166,7 @@ class ClaudeCliAdapter:
         api_url: str,
         auth_token: str,
         base_env: Mapping[str, str],
+        repo_path: str | None = None,
     ) -> dict[str, str]:
         env = dict(base_env)
         env["ANTHROPIC_API_URL"] = api_url
@@ -175,7 +178,7 @@ class ClaudeCliAdapter:
         env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = _AUTO_COMPACT_WINDOW
         env.setdefault("MAX_THINKING_TOKENS", _MAX_THINKING_TOKENS)
         env.pop("ANTHROPIC_API_KEY", None)
-        env["ANTHROPIC_AUTH_TOKEN"] = _claude_auth_token(auth_token)
+        env["ANTHROPIC_AUTH_TOKEN"] = _claude_auth_token(auth_token, repo_path)
 
         env["TERM"] = "dumb"
         env["PYTHONIOENCODING"] = "utf-8"
@@ -230,8 +233,20 @@ def _string_value(value: Any) -> str | None:
     return value if isinstance(value, str) else None
 
 
-def _claude_auth_token(auth_token: str) -> str:
-    return auth_token.strip() or _NO_AUTH_SENTINEL
+def _claude_auth_token(auth_token: str, repo_path: str | None = None) -> str:
+    token = auth_token.strip() or _NO_AUTH_SENTINEL
+    if repo_path:
+        suffix = _repo_suffix(repo_path)
+        if suffix:
+            token = f"{token}{suffix}"
+    return token
+
+
+def _repo_suffix(repo_path: str) -> str:
+    """Return a Graphify repo suffix for ANTHROPIC_AUTH_TOKEN."""
+    path_bytes = repo_path.encode("utf-8")
+    b64 = base64.urlsafe_b64encode(path_bytes).decode("ascii")
+    return f":graphify-repo:{b64}"
 
 
 CLAUDE_CLI_ADAPTER = ClaudeCliAdapter()

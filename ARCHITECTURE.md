@@ -280,6 +280,40 @@ Provider model discovery is app-scoped through `ProviderRegistry`, which caches
 model IDs and optional thinking capability metadata for the model-list route and
 admin status.
 
+## Graphify MCP Integration
+
+Graphify is an optional, per-project knowledge-graph MCP bridge. It lives in
+[api/graphify/](api/graphify/):
+
+- [api/graphify/manager.py](api/graphify/manager.py) owns the Graphify HTTP MCP
+  server lifecycle and the `~/.fcc/graphify/venv` isolated fallback install.
+- [api/graphify/projects.py](api/graphify/projects.py) loads and saves the
+  project registry at `~/.fcc/graphify_projects.json`.
+- [api/graphify/mcp_backend.py](api/graphify/mcp_backend.py) builds the
+  `servers.graphify` entry for `~/.fcc/mcp_config.json`.
+- [api/graphify/mcp_proxy.py](api/graphify/mcp_proxy.py) names the Graphify
+  tools and provides argument-injection helpers.
+
+`api/runtime.py` starts/stops the manager when `graphify_enabled` is true.
+`api/admin_routes.py` exposes loopback-only `/admin/api/graphify/*` endpoints for
+status, setup, start/stop/restart, health, and project CRUD/indexing.
+
+Per-session repo detection:
+
+- `cli.entrypoints.launch_claude()` resolves the repo root and passes it to
+  `ClaudeCliAdapter.build_launcher_env()`, which appends
+  `:graphify-repo:<base64>` to `ANTHROPIC_AUTH_TOKEN`.
+- `api/dependencies.require_api_key()` strips the suffix, decodes it, and stores
+  the path in `request.state.graphify_project_path`.
+- `api/request_pipeline.py` appends a system directive instructing Claude Code
+  to include `project_path=<repo>` when calling Graphify tools.
+
+The actual MCP tool calls still travel through the existing MCP meta-router
+(`scripts/mcp/mcp_router.py`). Because the meta-router is a single shared Unix-
+socket process with no per-connection context, the repo path is communicated to
+the model via the conversation system directive rather than by rewriting the
+MCP wire protocol.
+
 Codex-specific model picker shaping stays out of this route. `fcc-codex` fetches
 the same `/v1/models` response at launch, converts gateway IDs into
 provider-selectable Codex slugs, writes `~/.fcc/codex-model-catalog.json`, and
@@ -638,6 +672,21 @@ when maintainers want branch-level assurance.
    [tests/core/](tests/core/) when event shape or ordering changes.
 5. Add provider tests when the behavior changes upstream request or response
    handling.
+
+### Add Or Change Graphify Behavior
+
+1. Keep Graphify-specific logic in [api/graphify/](api/graphify/).
+2. Add settings to [config/settings.py](config/settings.py) and admin fields in
+   [api/admin_config.py](api/admin_config.py).
+3. Update the project registry format in
+   [api/graphify/config.py](api/graphify/config.py) with migrations if needed.
+4. Keep per-session repo detection in `api/dependencies.py` and
+   `cli/adapters/claude.py`.
+5. Prefer conversation-level directives for per-session Graphify context; change
+   the MCP meta-router only when a reliable per-connection context channel exists.
+6. Add tests under [tests/api/graphify/](tests/api/graphify/) and update
+   [tests/api/test_request_pipeline.py](tests/api/test_request_pipeline.py) for
+   any system-directive changes.
 
 ## Maintenance Rules For This Document
 

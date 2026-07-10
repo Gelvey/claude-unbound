@@ -1,5 +1,6 @@
 """Dependency injection for FastAPI."""
 
+import base64
 import secrets
 
 from fastapi import Depends, HTTPException, Request
@@ -114,6 +115,11 @@ def require_api_key(
     if header.lower().startswith("bearer "):
         token = header.split(" ", 1)[1].strip()
 
+    # Detect optional per-session Graphify repo suffix (:graphify-repo:<base64>)
+    token, repo_path = _extract_graphify_repo_suffix(token)
+    if repo_path:
+        request.state.graphify_project_path = repo_path
+
     # Strip anything after the first colon to handle tokens with appended model names
     if token and ":" in token:
         token = token.split(":", 1)[0].strip()
@@ -124,6 +130,23 @@ def require_api_key(
         token.encode("utf-8"), anthropic_auth_token.encode("utf-8")
     ):
         raise HTTPException(status_code=401, detail="Invalid API key")
+
+
+def _extract_graphify_repo_suffix(token: str) -> tuple[str, str | None]:
+    """Decode and strip a `:graphify-repo:<base64>` suffix from a token."""
+    marker = ":graphify-repo:"
+    idx = token.rfind(marker)
+    if idx == -1:
+        return token, None
+    prefix = token[:idx].strip()
+    b64_path = token[idx + len(marker) :].strip()
+    if not b64_path:
+        return prefix, None
+    try:
+        repo_path = base64.urlsafe_b64decode(b64_path.encode("ascii")).decode("utf-8")
+    except ValueError, UnicodeDecodeError:
+        return prefix, None
+    return prefix, repo_path
 
 
 def get_provider() -> BaseProvider:

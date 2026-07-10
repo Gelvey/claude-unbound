@@ -1,5 +1,6 @@
+import base64
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -12,6 +13,7 @@ from api.dependencies import (
     get_provider,
     get_provider_for_type,
     get_settings,
+    require_api_key,
     resolve_provider,
 )
 from config.nim import NimSettings
@@ -698,3 +700,53 @@ def test_resolve_provider_unrelated_value_error_is_not_unknown_provider_log() ->
     ):
         deps.resolve_provider("nvidia_nim", app=None, settings=_make_mock_settings())
     log_err.assert_not_called()
+
+
+def _auth_request(token: str | None) -> Any:
+    from starlette.requests import Request
+
+    scope = {
+        "type": "http",
+        "headers": [],
+    }
+    if token is not None:
+        scope["headers"] = [(b"authorization", f"Bearer {token}".encode())]
+    return Request(scope)
+
+
+def test_require_api_key_accepts_token_with_graphify_repo_suffix() -> None:
+    settings = MagicMock()
+    settings.anthropic_auth_token = "proxy-token"
+
+    repo_path = "/home/user/project"
+    suffix = base64.urlsafe_b64encode(repo_path.encode("utf-8")).decode("ascii")
+    request = _auth_request(f"proxy-token:graphify-repo:{suffix}")
+
+    require_api_key(request, settings)
+
+    assert request.state.graphify_project_path == repo_path
+
+
+def test_require_api_key_rejects_invalid_token_with_repo_suffix() -> None:
+    settings = MagicMock()
+    settings.anthropic_auth_token = "proxy-token"
+
+    repo_path = "/home/user/project"
+    suffix = base64.urlsafe_b64encode(repo_path.encode("utf-8")).decode("ascii")
+    request = _auth_request(f"wrong-token:graphify-repo:{suffix}")
+
+    with pytest.raises(HTTPException) as exc_info:
+        require_api_key(request, settings)
+
+    assert exc_info.value.status_code == 401
+
+
+def test_require_api_key_ignores_malformed_graphify_suffix() -> None:
+    settings = MagicMock()
+    settings.anthropic_auth_token = "proxy-token"
+
+    request = _auth_request("proxy-token:graphify-repo:not-valid-base64!!!")
+
+    require_api_key(request, settings)
+
+    assert getattr(request.state, "graphify_project_path", None) is None

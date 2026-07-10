@@ -129,6 +129,18 @@ def test_admin_static_defines_mcp_view():
     assert 'id="mcpSections"' in html
 
 
+def test_admin_static_defines_graphify_view():
+    script = Path("api/admin_static/admin.js").read_text(encoding="utf-8")
+    html = Path("api/admin_static/index.html").read_text(encoding="utf-8")
+
+    assert 'id: "graphify"' in script
+    assert 'containerId: "graphifySections"' in script
+    assert 'data-view="graphify"' in html
+    assert 'id="graphifySections"' in html
+    assert "function loadGraphifyView" in script
+    assert "function renderGraphifyView" in script
+
+
 def test_admin_static_serves_favicon_svg(monkeypatch, tmp_path):
     _set_home(monkeypatch, tmp_path)
     app = create_app(lifespan_enabled=False)

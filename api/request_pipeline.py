@@ -12,6 +12,7 @@ from fastapi import HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from loguru import logger
 
+from api.graphify.mcp_proxy import GRAPHIFY_TOOL_NAMES
 from config.provider_catalog import PROVIDER_CATALOG
 from config.settings import Settings
 from core.anthropic import get_token_count, get_user_facing_error_message
@@ -115,6 +116,16 @@ _MODULE_TOKEN_COUNTER: TokenCounter | None = None
 _MODULE_SYSTEM_DIRECTIVES: list[str] = []
 
 
+def _graphify_project_directive(project_path: str, tool_names: list[str]) -> str:
+    """Return a system directive that tells the model the current repo root."""
+    tools = ", ".join(tool_names)
+    return (
+        f"The current project root for Graphify is: {project_path}. "
+        f"When calling any Graphify tool ({tools}), "
+        f"always include project_path={project_path!r} in the tool arguments."
+    )
+
+
 def add_message_intercepts(
     intercepts: Iterable[MessageIntercept],
 ) -> None:
@@ -193,11 +204,14 @@ class ApiRequestPipeline:
         model_router: ModelRouter | None = None,
         token_counter: TokenCounter | None = None,
         responses_adapter: OpenAIResponsesAdapter | None = None,
+        *,
+        graphify_project_path: str | None = None,
     ) -> None:
         self._settings = settings
         self._provider_getter = provider_getter
         self._model_router = model_router or ModelRouter(settings)
         self._responses_adapter = responses_adapter or OpenAIResponsesAdapter()
+        self._graphify_project_path = graphify_project_path
         # Module-supplied token counter takes precedence over the default;
         # explicit constructor argument still wins over both for tests.
         module_token_counter = get_module_token_counter()
@@ -501,6 +515,13 @@ class ApiRequestPipeline:
         if self._settings.concise_output:
             append_system_directive(
                 routed.request, self._settings.concise_output_directive
+            )
+        if self._graphify_project_path:
+            append_system_directive(
+                routed.request,
+                _graphify_project_directive(
+                    self._graphify_project_path, sorted(GRAPHIFY_TOOL_NAMES)
+                ),
             )
         for directive in get_module_system_directives():
             append_system_directive(routed.request, directive)

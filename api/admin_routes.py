@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import inspect
 import ipaddress
 from pathlib import Path
@@ -13,6 +14,13 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from api.graphify import (
+    GraphifyManager,
+    add_or_update_project,
+    load_project_registry,
+    remove_project,
+    save_project_registry,
+)
 from config.settings import Settings
 from config.settings import get_settings as get_cached_settings
 from providers.registry import ProviderRegistry, create_freebuff_manager
@@ -824,6 +832,152 @@ async def sftp_import(payload: SftpImportPayload, request: Request):
     result_data["ok"] = result.applied
     result_data["imported_count"] = len(shared_servers)
     return result_data
+
+
+# ---------------------------------------------------------------------------
+# Graphify admin routes
+# ---------------------------------------------------------------------------
+
+
+def _get_graphify_manager(request: Request) -> GraphifyManager:
+    """Return the shared GraphifyManager singleton (stored on app.state)."""
+    manager = getattr(request.app.state, "graphify_manager", None)
+    if manager is None:
+        settings = get_cached_settings()
+        manager = GraphifyManager(settings)
+        request.app.state.graphify_manager = manager
+    return manager
+
+
+class GraphifyProjectPayload(BaseModel):
+    """Add or update a Graphify project."""
+
+    path: str
+    name: str | None = None
+    graphify_out: str = "graphify-out"
+
+
+@router.get("/admin/api/graphify/status")
+async def graphify_status(request: Request):
+    """Return Graphify status for the admin panel."""
+    require_loopback_admin(request)
+    manager = _get_graphify_manager(request)
+    return manager.status()
+
+
+@router.post("/admin/api/graphify/setup")
+async def graphify_setup(request: Request):
+    """Verify/install Graphify and return readiness info."""
+    require_loopback_admin(request)
+    manager = _get_graphify_manager(request)
+    return await manager.setup(create_venv=True)
+
+
+@router.post("/admin/api/graphify/start")
+async def graphify_start(request: Request):
+    """Start the Graphify HTTP MCP server."""
+    require_loopback_admin(request)
+    manager = _get_graphify_manager(request)
+    success = await manager.start()
+    result: dict[str, Any] = {
+        "success": success,
+        "status": manager.status(),
+    }
+    if not success and manager.last_error:
+        result["error"] = manager.last_error
+    return result
+
+
+@router.post("/admin/api/graphify/stop")
+async def graphify_stop(request: Request):
+    """Stop the Graphify HTTP MCP server."""
+    require_loopback_admin(request)
+    manager = _get_graphify_manager(request)
+    await manager.stop()
+    return {"success": True, "status": manager.status()}
+
+
+@router.post("/admin/api/graphify/restart")
+async def graphify_restart(request: Request):
+    """Restart the Graphify HTTP MCP server."""
+    require_loopback_admin(request)
+    manager = _get_graphify_manager(request)
+    success = await manager.restart()
+    return {
+        "success": success,
+        "status": manager.status(),
+    }
+
+
+@router.get("/admin/api/graphify/health")
+async def graphify_health(request: Request):
+    """Probe the Graphify /mcp endpoint."""
+    require_loopback_admin(request)
+    manager = _get_graphify_manager(request)
+    if manager.is_running:
+        return await manager.health_check()
+    return {"status": "not_running", "error": "Graphify is not running"}
+
+
+@router.get("/admin/api/graphify/projects")
+async def graphify_projects(request: Request):
+    """List registered Graphify projects."""
+    require_loopback_admin(request)
+    registry = load_project_registry()
+    return {
+        "active_project_path": registry.active_project_path,
+        "projects": [project.model_dump() for project in registry.projects],
+    }
+
+
+@router.post("/admin/api/graphify/projects")
+async def graphify_add_project(payload: GraphifyProjectPayload, request: Request):
+    """Add or update a Graphify project."""
+    require_loopback_admin(request)
+    registry = load_project_registry()
+    project = add_or_update_project(
+        registry,
+        path=payload.path,
+        name=payload.name,
+        graphify_out=payload.graphify_out,
+    )
+    save_project_registry(registry)
+    return {"success": True, "project": project.model_dump()}
+
+
+def _decode_project_path(path_b64: str) -> str:
+    """Decode a base64 project path from a URL segment.
+
+    Accepts URL-safe base64 with or without padding so the web UI can strip
+    trailing ``=`` characters for cleaner URLs.
+    """
+    padding_needed = (4 - len(path_b64) % 4) % 4
+    padded = path_b64 + ("=" * padding_needed)
+    return base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
+
+
+@router.delete("/admin/api/graphify/projects/{path_b64}")
+async def graphify_remove_project(path_b64: str, request: Request):
+    """Remove a Graphify project by base64-encoded path."""
+    require_loopback_admin(request)
+    path = _decode_project_path(path_b64)
+    registry = load_project_registry()
+    removed = remove_project(registry, path)
+    save_project_registry(registry)
+    return {"success": removed}
+
+
+@router.post("/admin/api/graphify/projects/{path_b64}/index")
+async def graphify_index_project(path_b64: str, request: Request):
+    """Run graphify extract/update for a project."""
+    require_loopback_admin(request)
+    path = _decode_project_path(path_b64)
+    registry = load_project_registry()
+    matches = [p for p in registry.projects if p.path == path]
+    if not matches:
+        raise HTTPException(status_code=404, detail="Project not found")
+    manager = _get_graphify_manager(request)
+    return await manager.index_project(matches[0])
 
 
 # ---------------------------------------------------------------------------

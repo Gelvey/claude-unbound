@@ -706,6 +706,7 @@ class TestCLISession:
                 proxy_root_url: str,
                 auth_token: str,
                 base_env: Mapping[str, str],
+                repo_path: str | None = None,
             ) -> dict[str, str]:
                 return dict(base_env)
 

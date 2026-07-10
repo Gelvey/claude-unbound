@@ -58,6 +58,13 @@ const VIEW_GROUPS = [
     containerId: "freebuffSections",
   },
   {
+    id: "graphify",
+    label: "Graphify",
+    title: "Graphify",
+    sections: ["graphify"],
+    containerId: "graphifySections",
+  },
+  {
     id: "diagnostics",
     label: "Diagnostics",
     title: "Diagnostics & Logging",
@@ -2184,12 +2191,266 @@ function onFreebuffViewActivated() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Graphify admin view
+// ---------------------------------------------------------------------------
+
+const graphifyState = {
+  status: null,
+  projects: [],
+  health: null,
+};
+
+async function loadGraphifyView() {
+  const container = byId("graphifySections");
+  let loadingIndicator = container.querySelector("#graphify-loading");
+  if (!loadingIndicator) {
+    loadingIndicator = document.createElement("div");
+    loadingIndicator.id = "graphify-loading";
+    loadingIndicator.className = "mcp-status-banner";
+    loadingIndicator.innerHTML = '<span class="status-pill neutral">⏳ Loading</span> Checking Graphify status...';
+    loadingIndicator.style.cssText = "opacity: 0.7; font-size: 0.9em;";
+    container.appendChild(loadingIndicator);
+  }
+
+  try {
+    const [statusResult, healthResult, projectsResult] = await Promise.all([
+      api("/admin/api/graphify/status"),
+      api("/admin/api/graphify/health").catch(() => ({ status: "unreachable" })),
+      api("/admin/api/graphify/projects"),
+    ]);
+    graphifyState.status = statusResult;
+    graphifyState.health = healthResult;
+    graphifyState.projects = projectsResult.projects || [];
+    renderGraphifyView(statusResult, graphifyState.projects, healthResult);
+  } catch (error) {
+    if (loadingIndicator) {
+      loadingIndicator.remove();
+    }
+    const errorDiv = document.createElement("div");
+    errorDiv.className = "message-area error";
+    errorDiv.textContent = `Failed to load Graphify status: ${error.message}`;
+    container.appendChild(errorDiv);
+  }
+}
+
+function renderGraphifyView(status, projects, health) {
+  const container = byId("graphifySections");
+  const loadingIndicator = container.querySelector("#graphify-loading");
+  if (loadingIndicator) {
+    loadingIndicator.remove();
+  }
+
+  const existingStatus = container.querySelector("#graphify-status-section");
+  if (existingStatus) {
+    existingStatus.remove();
+  }
+
+  const statusSection = document.createElement("div");
+  statusSection.id = "graphify-status-section";
+
+  const banner = document.createElement("div");
+  banner.className = "mcp-status-banner";
+  const runState = status.running ? "ok" : status.last_error ? "error" : "neutral";
+  const runLabel = status.running ? 'Running' : status.last_error ? 'Error' : 'Stopped';
+  const portInfo = status.port ? ` on port ${status.port}` : "";
+  const pythonInfo = status.python ? ` (${status.python})` : "";
+  banner.innerHTML =
+    `<span class="status-pill ${runState}">${runLabel}</span> Graphify${portInfo}${pythonInfo}`;
+  statusSection.appendChild(banner);
+
+  if (status.last_error) {
+    const errorBanner = document.createElement("div");
+    errorBanner.className = "mcp-status-banner warning-banner";
+    errorBanner.textContent = `Error: ${status.last_error}`;
+    statusSection.appendChild(errorBanner);
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "mcp-action-row";
+
+  const setupBtn = graphifyActionButton("Setup", async () => {
+    const result = await api("/admin/api/graphify/setup", { method: "POST" });
+    showMessage(
+      result.ready
+        ? `Graphify ready — ${result.method} (${result.python})`
+        : result.error || "Setup failed",
+      result.ready ? "ok" : "error",
+    );
+    await loadGraphifyView();
+  });
+  const startBtn = graphifyActionButton("Start", async () => {
+    const result = await api("/admin/api/graphify/start", { method: "POST" });
+    showMessage(result.success ? "Graphify started" : result.error || "Start failed", result.success ? "ok" : "error");
+    await loadGraphifyView();
+  });
+  const stopBtn = graphifyActionButton("Stop", async () => {
+    await api("/admin/api/graphify/stop", { method: "POST" });
+    showMessage("Graphify stopped", "ok");
+    await loadGraphifyView();
+  });
+  const restartBtn = graphifyActionButton("Restart", async () => {
+    const result = await api("/admin/api/graphify/restart", { method: "POST" });
+    showMessage(result.success ? "Graphify restarted" : "Restart failed", result.success ? "ok" : "error");
+    await loadGraphifyView();
+  });
+  const refreshBtn = graphifyActionButton("Refresh", async () => {
+    await loadGraphifyView();
+  });
+
+  actions.append(setupBtn, startBtn, stopBtn, restartBtn, refreshBtn);
+  statusSection.appendChild(actions);
+
+  const projectSection = document.createElement("section");
+  projectSection.className = "settings-section";
+  const projectHeading = document.createElement("div");
+  projectHeading.className = "section-heading";
+  projectHeading.innerHTML = `<div><h3>Projects</h3><p>Knowledge-graph projects tracked by Graphify.</p></div>`;
+  projectSection.appendChild(projectHeading);
+
+  const addRow = document.createElement("div");
+  addRow.className = "mcp-action-row";
+  addRow.style.cssText = "margin-bottom: 12px;";
+  const pathInput = document.createElement("input");
+  pathInput.type = "text";
+  pathInput.placeholder = "Absolute repo path";
+  pathInput.style.cssText = "flex: 1;";
+  const addBtn = document.createElement("button");
+  addBtn.type = "button";
+  addBtn.className = "primary-button";
+  addBtn.textContent = "Add Project";
+  addBtn.addEventListener("click", async () => {
+    const path = pathInput.value.trim();
+    if (!path) return;
+    await api("/admin/api/graphify/projects", {
+      method: "POST",
+      body: JSON.stringify({ path }),
+    });
+    pathInput.value = "";
+    await loadGraphifyView();
+  });
+  addRow.append(pathInput, addBtn);
+  projectSection.appendChild(addRow);
+
+  const grid = document.createElement("div");
+  grid.className = "field-grid";
+  projects.forEach((project) => {
+    const card = document.createElement("article");
+    card.className = "provider-card";
+
+    const title = document.createElement("div");
+    title.className = "provider-title";
+    title.innerHTML = `<strong>${project.name || project.path}</strong>`;
+    const pill = document.createElement("span");
+    pill.className = `status-pill ${statusClass(project.status)}`;
+    pill.textContent = project.status || "missing";
+    title.appendChild(pill);
+
+    const meta = document.createElement("div");
+    meta.className = "provider-meta";
+    meta.textContent = project.path;
+    const lastIndexed = document.createElement("div");
+    lastIndexed.className = "provider-meta";
+    lastIndexed.textContent = project.last_indexed
+      ? `Last indexed: ${new Date(project.last_indexed).toLocaleString()}`
+      : "Not indexed yet";
+
+    const cardActions = document.createElement("div");
+    cardActions.className = "mcp-backend-actions";
+    const indexBtn = document.createElement("button");
+    indexBtn.type = "button";
+    indexBtn.className = "secondary-button";
+    indexBtn.textContent = "Index";
+    indexBtn.addEventListener("click", async () => {
+      indexBtn.disabled = true;
+      indexBtn.textContent = "Indexing...";
+      const pathB64 = graphifyPathB64(project.path);
+      try {
+        const result = await api(`/admin/api/graphify/projects/${pathB64}/index`, {
+          method: "POST",
+          body: "{}",
+        });
+        showMessage(
+          result.success ? `Indexed ${project.name || project.path}` : result.error || "Index failed",
+          result.success ? "ok" : "error",
+        );
+        await loadGraphifyView();
+      } catch (error) {
+        showMessage(`Index failed: ${error.message}`, "error");
+      } finally {
+        indexBtn.disabled = false;
+        indexBtn.textContent = "Index";
+      }
+    });
+
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.className = "ghost-button";
+    removeBtn.textContent = "Remove";
+    removeBtn.addEventListener("click", async () => {
+      const pathB64 = graphifyPathB64(project.path);
+      await api(`/admin/api/graphify/projects/${pathB64}`, { method: "DELETE" });
+      await loadGraphifyView();
+    });
+
+    cardActions.append(indexBtn, removeBtn);
+    card.append(title, meta, lastIndexed, cardActions);
+    grid.appendChild(card);
+  });
+  projectSection.appendChild(grid);
+  statusSection.appendChild(projectSection);
+
+  container.appendChild(statusSection);
+}
+
+function graphifyActionButton(label, onClick) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "secondary-button";
+  btn.textContent = label;
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    const original = btn.textContent;
+    btn.textContent = `${label}...`;
+    try {
+      await onClick();
+    } finally {
+      btn.disabled = false;
+      btn.textContent = original;
+    }
+  });
+  return btn;
+}
+
+function graphifyPathB64(path) {
+  const bytes = new TextEncoder().encode(path);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function onGraphifyViewActivated() {
+  if (state.activeView === "graphify") {
+    loadGraphifyView();
+  }
+}
+
+// Load Freebuff view when its tab is activated
+function onFreebuffViewActivated() {
+  if (state.activeView === "freebuff") {
+    loadFreebuffView();
+  }
+}
+
 // Hook into setActiveView
 const _originalSetActiveView = setActiveView;
 setActiveView = function (viewId, opts) {
   _originalSetActiveView(viewId, opts);
   onMcpViewActivated();
   onFreebuffViewActivated();
+  onGraphifyViewActivated();
 };
 
 load().catch((error) => {

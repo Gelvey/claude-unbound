@@ -87,6 +87,7 @@ class ClientCliAdapter(Protocol):
         proxy_root_url: str,
         auth_token: str,
         base_env: Mapping[str, str],
+        repo_path: str | None = None,
     ) -> dict[str, str]:
         """Build environment variables for a wrapper-launched client CLI."""
         ...

@@ -372,7 +372,8 @@ def test_claude_child_env_targets_current_proxy_config() -> None:
 
     assert env["PATH"] == "keep"
     assert env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:9090"
-    assert env["ANTHROPIC_AUTH_TOKEN"] == "proxy-token"
+    assert env["ANTHROPIC_AUTH_TOKEN"].startswith("proxy-token")
+    assert ":graphify-repo:" in env["ANTHROPIC_AUTH_TOKEN"]
     assert env["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] == "1"
     assert env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "190000"
     assert "ANTHROPIC_API_KEY" not in env
@@ -389,7 +390,8 @@ def test_claude_child_env_uses_sentinel_for_blank_configured_auth_token() -> Non
         },
     )
 
-    assert env["ANTHROPIC_AUTH_TOKEN"] == "fcc-no-auth"
+    assert env["ANTHROPIC_AUTH_TOKEN"].startswith("fcc-no-auth")
+    assert ":graphify-repo:" in env["ANTHROPIC_AUTH_TOKEN"]
     assert "ANTHROPIC_API_KEY" not in env
 
 
@@ -423,7 +425,8 @@ def test_launch_claude_passes_args_and_child_env(
     assert popen.call_args.args[0] == ["resolved-claude.cmd", "--model", "sonnet"]
     child_env = popen.call_args.kwargs["env"]
     assert child_env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:9191"
-    assert child_env["ANTHROPIC_AUTH_TOKEN"] == "proxy-token"
+    assert child_env["ANTHROPIC_AUTH_TOKEN"].startswith("proxy-token")
+    assert ":graphify-repo:" in child_env["ANTHROPIC_AUTH_TOKEN"]
     assert child_env["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] == "1"
     assert child_env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "190000"
     assert child_env["KEEP_ME"] == "yes"
