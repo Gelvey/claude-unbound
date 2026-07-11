@@ -231,17 +231,29 @@ class GraphifyManager:
         # port during the readiness window).
         env = os.environ.copy()
         env["GRAPHIFY_API_KEY"] = self._settings.graphify_api_key or ""
+        # Stateless mode makes every MCP request independent so the server
+        # does not require an mcp-session-id header. Without it, the upstream
+        # graphifyy session manager returns HTTP 400 'Missing session ID'
+        # for any tools/call that lacks the (rotating, per-response) session
+        # id the Python SDK hands out — Claude Code's TS MCP SDK maps that
+        # to the generic "Unable to connect. Is the computer able to access
+        # the url?" surfaced as tool failures.
+        serve_argv: list[str] = [
+            "graphify.serve",
+            "--transport",
+            "http",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+        ]
+        if self._settings.graphify_stateless:
+            serve_argv.append("--stateless")
         try:
             self._process = await asyncio.create_subprocess_exec(
                 python,
                 "-m",
-                "graphify.serve",
-                "--transport",
-                "http",
-                "--host",
-                "127.0.0.1",
-                "--port",
-                str(port),
+                *serve_argv,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
                 env=env,

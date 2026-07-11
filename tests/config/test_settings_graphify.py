@@ -80,6 +80,39 @@ def test_graphify_settings_parsing(
         assert getattr(settings, key) == value
 
 
+@pytest.mark.parametrize(
+    "env_value, expected",
+    [
+        (None, True),  # unset -> default True (stateless required for Claude Code)
+        ("true", True),
+        ("True", True),
+        ("1", True),
+        ("yes", True),
+        ("false", False),  # opt-in to stateful session manager
+        ("False", False),
+        ("0", False),
+        ("no", False),
+    ],
+)
+def test_graphify_stateless_setting_parses_env(
+    env_value: str | None,
+    expected: bool,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """GRAPHIFY_STATELESS controls whether the graphify HTTP transport requires
+    an mcp-session-id header. Stateless is the default so that Claude Code's
+    StreamableHTTPClientTransport works regardless of session-cache state.
+    """
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("GRAPHIFY_STATELESS", raising=False)
+    if env_value is not None:
+        monkeypatch.setenv("GRAPHIFY_STATELESS", env_value)
+
+    settings = Settings()
+    assert settings.graphify_stateless is expected
+
+
 def test_graphify_llm_fields_default_empty(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

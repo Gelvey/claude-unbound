@@ -242,6 +242,21 @@ class Settings(BaseSettings):
             "Leave empty for no auth on the loopback server."
         ),
     )
+    graphify_stateless: bool = Field(
+        default=True,
+        validation_alias="GRAPHIFY_STATELESS",
+        description=(
+            "Run the local Graphify HTTP MCP server in --stateless mode "
+            "(default true). In stateless mode each request is independent "
+            "and the server does not require the mcp-session-id header, "
+            "which makes the server resilient to Claude Code MCP SDK "
+            "session-cache quirks and matches the upstream graphifyy "
+            "recommendation for HTTP transport. Set false only if a tool "
+            "needs request-scoped state persisted on the server (rare): "
+            "without --stateless, every non-initialise POST missing "
+            "mcp-session-id returns HTTP 400 'Missing session ID'."
+        ),
+    )
     graphify_llm_backend: str = Field(
         default="",
         validation_alias="GRAPHIFY_LLM_BACKEND",

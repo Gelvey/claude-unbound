@@ -96,13 +96,20 @@ async def test_manager_start_stop_registers_and_unregisters_claude_server(
         assert manager.is_running
         assert manager.port == 9876
         create_subprocess.assert_called_once()
-        assert create_subprocess.call_args.args[:5] == (
+        # GRAPHIFY_STATELESS defaults to True, so --stateless must be in argv.
+        argv = create_subprocess.call_args.args
+        assert argv[:5] == (
             "/fake/python",
             "-m",
             "graphify.serve",
             "--transport",
             "http",
         )
+        assert "--host" in argv
+        assert "127.0.0.1" in argv
+        assert "--port" in argv
+        assert "9876" in argv
+        assert "--stateless" in argv
 
         data = json.loads(claude_json_path().read_text())
         servers = data["mcpServers"]
@@ -119,6 +126,84 @@ async def test_manager_start_stop_registers_and_unregisters_claude_server(
         data = json.loads(claude_json_path().read_text())
         assert GRAPHIFY_SERVER_NAME not in data.get("mcpServers", {})
         assert manager.status()["mcp_registered"] is False
+
+
+@pytest.mark.asyncio
+async def test_manager_start_passes_stateless_flag_by_default(
+    graphify_tmp_home: Path, graphify_settings: Any
+) -> None:
+    """Default GRAPHIFY_STATELESS=true appends --stateless to graphify.serve argv.
+
+    Without --stateless, the upstream graphifyy StreamableHTTPSessionManager
+    requires an mcp-session-id header on every tools/call POST and rejects
+    requests without it as 'Missing session ID' (HTTP 400). Claude Code's MCP
+    SDK maps that to a generic 'Unable to connect' tool failure, so the
+    server must run in stateless mode by default to remain usable.
+    """
+    manager = _build_manager(graphify_settings, graphify_python_path="/fake/python")
+    process = _async_process_mock(returncode=None)
+    captured: dict[str, tuple[str, ...]] = {}
+
+    def _capture(*args: object, **kwargs: object) -> AsyncMock:
+        # Strip kwargs (env=...) and capture the positional argv.
+        argv = tuple(arg for arg in args if isinstance(arg, str))
+        captured["argv"] = argv
+        return process
+
+    with (
+        patch("api.graphify.manager._is_graphify_importable", return_value=True),
+        patch("api.graphify.manager._find_free_port", return_value=9876),
+        patch(
+            "api.graphify.manager.asyncio.create_subprocess_exec",
+            new=AsyncMock(side_effect=_capture),
+        ),
+        patch(
+            "api.graphify.manager.httpx.AsyncClient.post",
+            new_callable=AsyncMock,
+            return_value=_mcp_ok_response(),
+        ),
+    ):
+        await manager.start()
+
+    assert "--stateless" in captured["argv"]
+    await manager.stop()
+
+
+@pytest.mark.asyncio
+async def test_manager_start_omits_stateless_flag_when_disabled(
+    graphify_tmp_home: Path, graphify_settings: Any
+) -> None:
+    """Set GRAPHIFY_STATELESS=false to keep the legacy stateful session flow."""
+    manager = _build_manager(
+        graphify_settings,
+        graphify_python_path="/fake/python",
+        graphify_stateless=False,
+    )
+    process = _async_process_mock(returncode=None)
+    captured: dict[str, tuple[str, ...]] = {}
+
+    def _capture(*args: object, **kwargs: object) -> AsyncMock:
+        argv = tuple(arg for arg in args if isinstance(arg, str))
+        captured["argv"] = argv
+        return process
+
+    with (
+        patch("api.graphify.manager._is_graphify_importable", return_value=True),
+        patch("api.graphify.manager._find_free_port", return_value=9876),
+        patch(
+            "api.graphify.manager.asyncio.create_subprocess_exec",
+            new=AsyncMock(side_effect=_capture),
+        ),
+        patch(
+            "api.graphify.manager.httpx.AsyncClient.post",
+            new_callable=AsyncMock,
+            return_value=_mcp_ok_response(),
+        ),
+    ):
+        await manager.start()
+
+    assert "--stateless" not in captured["argv"]
+    await manager.stop()
 
 
 @pytest.mark.asyncio
