@@ -146,6 +146,7 @@ def test_install_sh_dry_run_produces_expected_steps() -> None:
     assert "Creating wrapper scripts" in stdout
     assert "Syncing project dependencies" in stdout
     assert "Setting up MCP Router" in stdout
+    assert "Installing Claude Code skill" in stdout
 
     # Post-install instructions
     assert "Claude Unbound is installed" in stdout

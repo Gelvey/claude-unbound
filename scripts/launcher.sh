@@ -14,6 +14,27 @@ REPO_DIR="$HOME/claude-unbound"
 FORK_URL="${FCC_FORK_URL:-https://github.com/Gelvey/claude-unbound}"
 SOCKET="${XDG_RUNTIME_DIR:-/tmp}/fcc-kitty-$$-$(date +%s%N 2>/dev/null || date +%s).sock"
 
+# ── Per-tab colour palette (active / inactive) ──────────────────────────────
+# Server=blue, MCP Router=green, Claude Code=orange. Applied after each
+# spawn via color_tab() (matched by title); kitty @ launch is synchronous so
+# the title match is race-free.
+SERVER_ACTIVE_BG="#2f6fbd";   SERVER_ACTIVE_FG="#ffffff"
+SERVER_INACTIVE_BG="#16314f";  SERVER_INACTIVE_FG="#6f9fd6"
+ROUTER_ACTIVE_BG="#3a9c4e";    ROUTER_ACTIVE_FG="#ffffff"
+ROUTER_INACTIVE_BG="#14331c";  ROUTER_INACTIVE_FG="#5fbf73"
+CLAUDE_ACTIVE_BG="#e08a2b";    CLAUDE_ACTIVE_FG="#1a1205"
+CLAUDE_INACTIVE_BG="#3a2410";  CLAUDE_INACTIVE_FG="#e0a85f"
+
+# Colour a tab in the main kitty window by title.
+# Args: title  active_bg active_fg inactive_bg inactive_fg
+color_tab() {
+    kitten @ --to "unix:$SOCKET" set-tab-color \
+        --match "title:^$1\$" \
+        "active_bg=$2" "active_fg=$3" \
+        "inactive_bg=$4" "inactive_fg=$5" \
+        2>/dev/null || true
+}
+
 # ── Portable helpers (macOS + Linux) ─────────────────────────────────────────
 # Desktop notification: Linux uses notify-send, macOS uses osascript.
 # pgrep -x Finder guards against headless macOS (CI, servers) where
@@ -222,10 +243,21 @@ if [ ! -f "$MCP_CONFIG_FILE" ]; then
 fi
 
 # ── Open kitty with the 3 tabs ─────────────────────────────────────────────────
+# --config NONE loads no kitty.conf, so the tab bar styling and the
+# Ctrl+Shift+T keybinding are injected via --override. Ctrl+Shift+T opens a
+# ready, orange, connected Claude Code tab (scripts/kitty/_claude_tab.sh)
+# instead of the default bare shell.
 kitty \
     --config NONE \
     --listen-on "unix:$SOCKET" \
     --override "allow_remote_control=socket-only" \
+    --override "tab_bar_style=powerline" \
+    --override "tab_powerline_style=slanted" \
+    --override "tab_bar_min_tabs=1" \
+    --override "tab_title_max_length=28" \
+    --override "active_tab_font_style=bold" \
+    --override "tab_separator= " \
+    --override "map ctrl+shift>t launch --type=tab --tab-title='Claude Code' --cwd=$REPO_DIR bash $REPO_DIR/scripts/kitty/_claude_tab.sh" \
     --title "Claude Unbound" \
     bash -c "echo '=== Claude Unbound CLI (waiting ${FCC_CLIENT_WARMUP_S:-5}s for fcc-server) ===' && sleep ${FCC_CLIENT_WARMUP_S:-5} && uv run fcc-claude; exec bash" &
 
@@ -235,6 +267,12 @@ if ! kill -0 "$KITTY_PID" 2>/dev/null; then
     notify critical "Claude Unbound" "kitty failed to start"
     exit 1
 fi
+
+# Colour the first tab (the Claude Unbound CLI tab, titled "Claude Unbound")
+# orange. The fcc-claude session is interactive here too.
+color_tab "Claude Unbound" \
+    "$CLAUDE_ACTIVE_BG" "$CLAUDE_ACTIVE_FG" \
+    "$CLAUDE_INACTIVE_BG" "$CLAUDE_INACTIVE_FG"
 
 # Spawn the other 2 tabs into the same kitty window
 spawn_tab() {
@@ -264,12 +302,18 @@ if [ -x "$MCP_SCRIPT" ] && command -v npx >/dev/null 2>&1 \
         fi
         exec bash
     "
+    color_tab "MCP Router" \
+        "$ROUTER_ACTIVE_BG" "$ROUTER_ACTIVE_FG" \
+        "$ROUTER_INACTIVE_BG" "$ROUTER_INACTIVE_FG"
 else
     echo "[fcc] MCP Router tab skipped (start_mcp.sh missing or deps not on PATH)"
 fi
 
 # Tab 2: Claude Unbound Server (run from repo via uv so the latest source is always used)
 spawn_tab "Server" bash -c "echo '=== Claude Unbound Server ===' && uv run fcc-server; exec bash"
+color_tab "Server" \
+    "$SERVER_ACTIVE_BG" "$SERVER_ACTIVE_FG" \
+    "$SERVER_INACTIVE_BG" "$SERVER_INACTIVE_FG"
 
 # The first kitty window already has the Claude Unbound CLI tab.
 

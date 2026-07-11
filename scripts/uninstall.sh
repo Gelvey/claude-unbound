@@ -259,6 +259,20 @@ remove_mcp_router_state
 step "Removing repository clone"
 remove_repo_clone
 
+# Remove the spawn-claude-tab skill installed by install.sh into ~/.claude/skills/.
+remove_skill() {
+    local dest="$HOME/.claude/skills/spawn-claude-tab"
+    if [ ! -d "$dest" ]; then
+        printf 'No skill directory at %s; skipping.\n' "$dest"
+        return 0
+    fi
+    run rm -rf "$dest"
+    printf 'Removed skill: %s\n' "$dest"
+}
+
+step "Removing Claude Code skill"
+remove_skill
+
 step "Purging FCC config and data from ~/.fcc"
 purge_fcc_home
 

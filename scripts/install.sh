@@ -556,6 +556,25 @@ sync_repo_extras
 step "Setting up MCP Router"
 setup_mcp_router
 
+# Install the spawn-claude-tab skill to ~/.claude/skills/ so Claude Code
+# agents in any repo can spawn new orange kitty tabs.
+install_skill() {
+    local src="$REPO_DIR/skills/spawn-claude-tab"
+    local dest="$HOME/.claude/skills/spawn-claude-tab"
+
+    if [ ! -d "$src" ]; then
+        printf 'WARNING: skill source not found at %s; skipping skill install.\n' "$src"
+        return 0
+    fi
+
+    mkdir -p "$dest"
+    run cp "$src/SKILL.md" "$dest/SKILL.md"
+    printf 'Installed skill: %s/SKILL.md\n' "$dest"
+}
+
+step "Installing Claude Code skill"
+install_skill
+
 printf '\nClaude Unbound is installed. We recommend using the launcher.sh script within the scripts folder for launching everything simultaneously via a kitty terminal window.\n'
 printf 'Alternatively, you can run everything seperately (except the MCP Router) with the following commands:\n'
 printf 'Start the proxy with: fcc-server\n'
