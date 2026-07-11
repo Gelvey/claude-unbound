@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from api.graphify.claude_mcp import GRAPHIFY_SERVER_NAME, claude_json_path
 from api.graphify.config import GraphifyProject, GraphifyProjectRegistry
 from api.graphify.manager import GraphifyManager
 from api.graphify.projects import load_project_registry
-from api.mcp_config import load_mcp_config
 
 
 def _async_process_mock(returncode: int | None = None) -> Any:
@@ -68,9 +69,10 @@ async def test_manager_setup_succeeds_with_importable_python(
 
 
 @pytest.mark.asyncio
-async def test_manager_start_stops_writes_and_removes_backend(
+async def test_manager_start_stop_registers_and_unregisters_claude_server(
     graphify_tmp_home: Path, graphify_settings: Any
 ) -> None:
+    """Start writes the graphify sibling entry to ~/.claude.json; stop removes it."""
     manager = _build_manager(graphify_settings, graphify_python_path="/fake/python")
     process = _async_process_mock(returncode=None)
 
@@ -82,16 +84,6 @@ async def test_manager_start_stops_writes_and_removes_backend(
             new_callable=AsyncMock,
             return_value=process,
         ) as create_subprocess,
-        patch(
-            "api.graphify.manager.reload_mcp_router_async",
-            new_callable=AsyncMock,
-            return_value={"reloaded": False, "error": "test fallback"},
-        ) as reload_router,
-        patch(
-            "api.graphify.manager.restart_mcp_router_async",
-            new_callable=AsyncMock,
-            return_value={"restarted": True},
-        ) as restart_router,
         patch(
             "api.graphify.manager.httpx.AsyncClient.post",
             new_callable=AsyncMock,
@@ -112,24 +104,28 @@ async def test_manager_start_stops_writes_and_removes_backend(
             "http",
         )
 
-        config, _ = load_mcp_config()
-        assert "graphify" in config.servers
-        assert config.servers["graphify"].url == "http://127.0.0.1:9876/mcp"
-        reload_router.assert_awaited()
+        data = json.loads(claude_json_path().read_text())
+        servers = data["mcpServers"]
+        assert GRAPHIFY_SERVER_NAME in servers
+        assert servers[GRAPHIFY_SERVER_NAME]["url"] == "http://127.0.0.1:9876/mcp"
+        assert servers[GRAPHIFY_SERVER_NAME]["headers"] == {
+            "Authorization": "Bearer secret-key"
+        }
+        assert manager.status()["mcp_registered"] is True
 
         await manager.stop()
 
         assert not manager.is_running
-        config, _ = load_mcp_config()
-        assert "graphify" not in config.servers
-        restart_router.assert_awaited()
+        data = json.loads(claude_json_path().read_text())
+        assert GRAPHIFY_SERVER_NAME not in data.get("mcpServers", {})
+        assert manager.status()["mcp_registered"] is False
 
 
 @pytest.mark.asyncio
-async def test_manager_start_does_not_register_backend_when_not_ready(
+async def test_manager_start_does_not_register_when_not_ready(
     graphify_tmp_home: Path, graphify_settings: Any
 ) -> None:
-    """Reorder guarantee: the MCP backend is not published until the server is ready."""
+    """Reorder guarantee: the Claude Code MCP entry is not written until the server is ready."""
     manager = _build_manager(graphify_settings, graphify_python_path="/fake/python")
     process = _async_process_mock(returncode=None)
 
@@ -146,18 +142,15 @@ async def test_manager_start_does_not_register_backend_when_not_ready(
             new_callable=AsyncMock,
             return_value=False,
         ),
-        patch("api.graphify.manager.add_graphify_mcp_backend") as add_backend,
         patch(
-            "api.graphify.manager.reload_mcp_router_async",
-            new_callable=AsyncMock,
-            return_value={"reloaded": True},
-        ),
+            "api.graphify.manager.register_graphify_claude_server"
+        ) as register_server,
     ):
         started = await manager.start()
 
     assert started is False
     assert manager.last_error == "Graphify health check timed out"
-    add_backend.assert_not_called()
+    register_server.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -174,11 +167,6 @@ async def test_manager_health_checks_running_server(
             "api.graphify.manager.asyncio.create_subprocess_exec",
             new_callable=AsyncMock,
             return_value=process,
-        ),
-        patch(
-            "api.graphify.manager.reload_mcp_router_async",
-            new_callable=AsyncMock,
-            return_value={"reloaded": True, "summary": {}},
         ),
         patch(
             "api.graphify.manager.httpx.AsyncClient.post",
@@ -488,3 +476,255 @@ def test_manager_extract_env_ignores_unknown_backend(
     )
     env = manager._extract_env()
     assert "ANTHROPIC_API_KEY" not in env
+
+
+# ---------------------------------------------------------------------------
+# Cloudflare / OpenAI-compatible extraction backend
+# ---------------------------------------------------------------------------
+
+
+def test_manager_extract_env_cloudflare_redirects_openai_backend(
+    graphify_tmp_home: Path, graphify_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """cloudflare rides graphify's openai backend pointed at the CF endpoint."""
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    manager = _build_manager(
+        graphify_settings,
+        graphify_llm_backend="cloudflare",
+        graphify_llm_api_key="cf-key",
+        cloudflare_ai_account_id="acct123",
+        graphify_llm_model="@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    )
+    env = manager._extract_env()
+    assert env["OPENAI_API_KEY"] == "cf-key"
+    assert (
+        env["OPENAI_BASE_URL"]
+        == "https://api.cloudflare.com/client/v4/accounts/acct123/ai/v1"
+    )
+    assert env["GRAPHIFY_OPENAI_MODEL"] == "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+
+
+def test_manager_extract_env_cloudflare_reuses_provider_key(
+    graphify_tmp_home: Path, graphify_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Blank GRAPHIFY_LLM_API_KEY falls back to the Cloudflare provider key."""
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    manager = _build_manager(
+        graphify_settings,
+        graphify_llm_backend="cloudflare",
+        graphify_llm_api_key="",
+        cloudflare_ai_api_key="cf-provider-key",
+        cloudflare_ai_account_id="acct456",
+    )
+    env = manager._extract_env()
+    assert env["OPENAI_API_KEY"] == "cf-provider-key"
+    assert "accounts/acct456/ai/v1" in env["OPENAI_BASE_URL"]
+    assert "GRAPHIFY_OPENAI_MODEL" not in env
+
+
+def test_manager_extract_env_cloudflare_honours_base_url_override(
+    graphify_tmp_home: Path, graphify_settings: Any
+) -> None:
+    manager = _build_manager(
+        graphify_settings,
+        graphify_llm_backend="cloudflare",
+        cloudflare_ai_api_key="k",
+        cloudflare_ai_base_url="https://gateway.example.com/ai/v1",
+    )
+    env = manager._extract_env()
+    assert env["OPENAI_BASE_URL"] == "https://gateway.example.com/ai/v1"
+
+
+@pytest.mark.parametrize(
+    ("backend", "attr", "env_key"),
+    [
+        ("gemini", "gemini_api_key", "GEMINI_API_KEY"),
+        ("deepseek", "deepseek_api_key", "DEEPSEEK_API_KEY"),
+        ("kimi", "kimi_api_key", "MOONSHOT_API_KEY"),
+    ],
+)
+def test_manager_extract_env_reuses_provider_key_for_compat_backends(
+    graphify_tmp_home: Path,
+    graphify_settings: Any,
+    backend: str,
+    attr: str,
+    env_key: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(env_key, raising=False)
+    manager = _build_manager(
+        graphify_settings,
+        graphify_llm_backend=backend,
+        graphify_llm_api_key="",
+        **{attr: "provider-key"},
+    )
+    env = manager._extract_env()
+    assert env[env_key] == "provider-key"
+
+
+def test_build_extract_args_cloudflare_passes_openai_backend(
+    graphify_tmp_home: Path, graphify_settings: Any
+) -> None:
+    manager = _build_manager(
+        graphify_settings,
+        graphify_llm_backend="cloudflare",
+        graphify_llm_model="@cf/meta/llama-3.3-70b",
+    )
+    project = GraphifyProject(path="/repo", name="repo")
+    args = manager._build_extract_args(project, "extract")
+    assert "--backend" in args
+    assert args[args.index("--backend") + 1] == "openai"
+    assert "--model" in args
+    assert args[args.index("--model") + 1] == "@cf/meta/llama-3.3-70b"
+
+
+def test_build_extract_args_code_only_skips_backend(
+    graphify_tmp_home: Path, graphify_settings: Any
+) -> None:
+    manager = _build_manager(
+        graphify_settings,
+        graphify_llm_backend="cloudflare",
+        graphify_code_only=True,
+    )
+    project = GraphifyProject(path="/repo", name="repo")
+    args = manager._build_extract_args(project, "extract")
+    assert "--code-only" in args
+    assert "--backend" not in args
+
+
+def test_build_extract_args_update_has_no_llm_flags(
+    graphify_tmp_home: Path, graphify_settings: Any
+) -> None:
+    manager = _build_manager(
+        graphify_settings,
+        graphify_llm_backend="cloudflare",
+        graphify_llm_model="m",
+    )
+    project = GraphifyProject(path="/repo", name="repo")
+    args = manager._build_extract_args(project, "update")
+    assert "--backend" not in args
+    assert "--model" not in args
+    assert "--code-only" not in args
+
+
+@pytest.mark.asyncio
+async def test_manager_index_project_cloudflare_passes_backend_and_env(
+    graphify_tmp_home: Path, graphify_settings: Any
+) -> None:
+    repo_path = graphify_tmp_home / "repo"
+    repo_path.mkdir()
+    project = _register_project(repo_path)
+    manager = _build_manager(
+        graphify_settings,
+        graphify_python_path="/fake/python",
+        graphify_llm_backend="cloudflare",
+        graphify_llm_model="@cf/meta/llama-3.3-70b",
+        cloudflare_ai_api_key="cf-key",
+        cloudflare_ai_account_id="acct",
+    )
+    success_process = _async_process_mock(returncode=0)
+    success_process.communicate = AsyncMock(return_value=(b"extracted", b""))
+
+    with (
+        patch("api.graphify.manager._is_graphify_importable", return_value=True),
+        patch(
+            "api.graphify.manager.GraphifyManager._ensure_graphify_llm_extra",
+            new_callable=AsyncMock,
+        ) as ensure_extra,
+        patch(
+            "api.graphify.manager.asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
+            return_value=success_process,
+        ) as create_subprocess,
+    ):
+        result = await manager.index_project(project)
+
+    assert result["success"] is True
+    ensure_extra.assert_awaited_once()
+    args = create_subprocess.call_args.args
+    assert "--backend" in args
+    assert args[args.index("--backend") + 1] == "openai"
+    assert "--model" in args
+    assert args[args.index("--model") + 1] == "@cf/meta/llama-3.3-70b"
+    env = create_subprocess.call_args.kwargs["env"]
+    assert env["OPENAI_API_KEY"] == "cf-key"
+    assert "accounts/acct/ai/v1" in env["OPENAI_BASE_URL"]
+
+
+@pytest.mark.asyncio
+async def test_ensure_graphify_llm_extra_installs_openai_when_missing(
+    graphify_tmp_home: Path, graphify_settings: Any
+) -> None:
+    manager = _build_manager(graphify_settings, graphify_llm_backend="cloudflare")
+    proc = _async_process_mock(returncode=0)
+    with (
+        patch("api.graphify.manager._is_module_importable", return_value=False),
+        patch("api.graphify.manager._pip_path", return_value="/fake/pip"),
+        patch(
+            "api.graphify.manager.asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
+            return_value=proc,
+        ) as create_subprocess,
+    ):
+        await manager._ensure_graphify_llm_extra("/fake/python")
+    create_subprocess.assert_awaited_once()
+    assert "graphifyy[openai]" in create_subprocess.call_args.args
+
+
+@pytest.mark.asyncio
+async def test_ensure_graphify_llm_extra_installs_anthropic_for_claude(
+    graphify_tmp_home: Path, graphify_settings: Any
+) -> None:
+    manager = _build_manager(graphify_settings, graphify_llm_backend="claude")
+    proc = _async_process_mock(returncode=0)
+    with (
+        patch("api.graphify.manager._is_module_importable", return_value=False),
+        patch("api.graphify.manager._pip_path", return_value="/fake/pip"),
+        patch(
+            "api.graphify.manager.asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
+            return_value=proc,
+        ) as create_subprocess,
+    ):
+        await manager._ensure_graphify_llm_extra("/fake/python")
+    assert "graphifyy[anthropic]" in create_subprocess.call_args.args
+
+
+@pytest.mark.asyncio
+async def test_ensure_graphify_llm_extra_skips_when_sdk_present(
+    graphify_tmp_home: Path, graphify_settings: Any
+) -> None:
+    manager = _build_manager(graphify_settings, graphify_llm_backend="cloudflare")
+    with (
+        patch("api.graphify.manager._is_module_importable", return_value=True),
+        patch(
+            "api.graphify.manager.asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
+        ) as create_subprocess,
+    ):
+        await manager._ensure_graphify_llm_extra("/fake/python")
+    create_subprocess.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ensure_graphify_llm_extra_noop_for_code_only(
+    graphify_tmp_home: Path, graphify_settings: Any
+) -> None:
+    manager = _build_manager(
+        graphify_settings,
+        graphify_code_only=True,
+        graphify_llm_backend="cloudflare",
+    )
+    with patch("api.graphify.manager._is_module_importable") as is_module:
+        await manager._ensure_graphify_llm_extra("/fake/python")
+    is_module.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_ensure_graphify_llm_extra_noop_without_backend(
+    graphify_tmp_home: Path, graphify_settings: Any
+) -> None:
+    manager = _build_manager(graphify_settings, graphify_llm_backend="")
+    with patch("api.graphify.manager._is_module_importable") as is_module:
+        await manager._ensure_graphify_llm_extra("/fake/python")
+    is_module.assert_not_called()

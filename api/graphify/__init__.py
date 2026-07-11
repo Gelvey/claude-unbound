@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from api.graphify.claude_mcp import (
+    register_graphify_claude_server,
+    unregister_graphify_claude_server,
+)
 from api.graphify.config import GraphifyProject, GraphifyProjectRegistry
 from api.graphify.manager import GraphifyManager
-from api.graphify.mcp_backend import build_graphify_mcp_backend
 from api.graphify.projects import (
     add_or_update_project,
     load_project_registry,
@@ -17,8 +20,9 @@ __all__ = [
     "GraphifyProject",
     "GraphifyProjectRegistry",
     "add_or_update_project",
-    "build_graphify_mcp_backend",
     "load_project_registry",
+    "register_graphify_claude_server",
     "remove_project",
     "save_project_registry",
+    "unregister_graphify_claude_server",
 ]

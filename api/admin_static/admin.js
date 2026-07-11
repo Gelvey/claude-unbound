@@ -478,7 +478,7 @@ function inputForField(field) {
   } else {
     input.value = field.value || "";
   }
-  if (field.key.startsWith("MODEL")) {
+  if (field.model_options) {
     input.setAttribute("list", "model-options");
   }
   return input;
@@ -574,6 +574,7 @@ async function apply() {
   // Reload tab-specific views cleared by renderSections
   if (state.activeView === "mcp") await loadMcpView();
   if (state.activeView === "freebuff") await loadFreebuffView();
+  if (state.activeView === "graphify") await loadGraphifyView();
   showMessage(
     pending.length
       ? `Applied. Restart fcc-server to use: ${pending.join(", ")}`
@@ -2206,7 +2207,41 @@ const graphifyState = {
   status: null,
   projects: [],
   health: null,
+  refreshTimer: null,
 };
+
+function stopGraphifyAutoRefresh() {
+  if (graphifyState.refreshTimer) {
+    clearInterval(graphifyState.refreshTimer);
+    graphifyState.refreshTimer = null;
+  }
+}
+
+function startGraphifyAutoRefreshIfBusy() {
+  const busy = graphifyState.projects.some((p) => p.status === "indexing");
+  if (!busy) {
+    stopGraphifyAutoRefresh();
+    return;
+  }
+  if (graphifyState.refreshTimer) return;
+  graphifyState.refreshTimer = setInterval(async () => {
+    if (state.activeView !== "graphify") {
+      stopGraphifyAutoRefresh();
+      return;
+    }
+    try {
+      const [statusResult, projectsResult] = await Promise.all([
+        api("/admin/api/graphify/status"),
+        api("/admin/api/graphify/projects"),
+      ]);
+      graphifyState.status = statusResult;
+      graphifyState.projects = projectsResult.projects || [];
+      renderGraphifyView(statusResult, graphifyState.projects, graphifyState.health);
+    } catch {
+      // Swallow transient polling errors; the next tick retries.
+    }
+  }, 2000);
+}
 
 async function loadGraphifyView() {
   const container = byId("graphifySections");
@@ -2230,6 +2265,7 @@ async function loadGraphifyView() {
     graphifyState.health = healthResult;
     graphifyState.projects = projectsResult.projects || [];
     renderGraphifyView(statusResult, graphifyState.projects, healthResult);
+    startGraphifyAutoRefreshIfBusy();
   } catch (error) {
     if (loadingIndicator) {
       loadingIndicator.remove();
@@ -2238,6 +2274,52 @@ async function loadGraphifyView() {
     errorDiv.className = "message-area error";
     errorDiv.textContent = `Failed to load Graphify status: ${error.message}`;
     container.appendChild(errorDiv);
+  }
+}
+
+function graphifyStatusPillClass(status) {
+  if (status === "ready") return "ok";
+  if (status === "indexing") return "warn";
+  if (status === "error") return "error";
+  if (status === "stale") return "warn";
+  return "neutral";
+}
+
+function graphifyStatusLabel(status) {
+  return status || "missing";
+}
+
+function graphifyHealthPill(health, running) {
+  if (!running) return { cls: "neutral", label: "Stopped" };
+  const s = (health && health.status) || "unreachable";
+  if (s === "healthy") return { cls: "ok", label: "Healthy" };
+  if (s === "unhealthy") return { cls: "error", label: "Unhealthy" };
+  if (s === "not_configured") return { cls: "neutral", label: "Not configured" };
+  return { cls: "warn", label: "Unreachable" };
+}
+
+function fmtNum(n) {
+  return (n || 0).toLocaleString();
+}
+
+async function loadGraphSummary(pathB64, target) {
+  try {
+    const summary = await api(`/admin/api/graphify/projects/${pathB64}/graph`);
+    if (!summary || summary.present === false) {
+      if (summary && summary.reason === "not_indexed") {
+        target.textContent = "Graph not built yet";
+      }
+      return;
+    }
+    const commit = summary.built_at_commit
+      ? ` · commit ${String(summary.built_at_commit).slice(0, 7)}`
+      : "";
+    target.innerHTML =
+      `📊 ${fmtNum(summary.node_count)} nodes · ${fmtNum(summary.link_count)} links · `
+      + `${fmtNum(summary.hyperedge_count)} hyperedges${commit}`;
+    target.dataset.loaded = "1";
+  } catch {
+    // Summary endpoint unavailable; leave the slot empty.
   }
 }
 
@@ -2259,18 +2341,33 @@ function renderGraphifyView(status, projects, health) {
   const banner = document.createElement("div");
   banner.className = "mcp-status-banner";
   const runState = status.running ? "ok" : status.last_error ? "error" : "neutral";
-  const runLabel = status.running ? 'Running' : status.last_error ? 'Error' : 'Stopped';
+  const runLabel = status.running ? "Running" : status.last_error ? "Error" : "Stopped";
+  const hp = graphifyHealthPill(health, status.running);
   const portInfo = status.port ? ` · port ${status.port}` : "";
   const pythonInfo = status.python ? ` · ${status.python}` : "";
+  const mcpPill = status.mcp_registered
+    ? ' <span class="status-pill ok">MCP registered</span>'
+    : ' <span class="status-pill neutral">MCP unregistered</span>';
+  const projectCount = status.projects_count ?? projects.length;
+  const countInfo = ` · ${projectCount} project${projectCount === 1 ? "" : "s"}`;
+  let backendInfo = "";
+  if (status.llm_backend) {
+    backendInfo = ` · backend ${status.llm_backend}`;
+    if (status.llm_model) backendInfo += ` (${status.llm_model})`;
+  } else if (status.code_only) {
+    backendInfo = " · code-only";
+  }
   banner.innerHTML =
-    `<span class="status-pill ${runState}">${runLabel}</span> Graphify · local MCP server (isolated venv, no Docker)${portInfo}${pythonInfo}`;
+    `<span class="status-pill ${runState}">${runLabel}</span> `
+    + `<span class="status-pill ${hp.cls}">${hp.label}</span>`
+    + `${mcpPill} Graphify · local MCP server (isolated venv, no Docker)${portInfo}${pythonInfo}${countInfo}${backendInfo}`;
   statusSection.appendChild(banner);
 
   const explainer = document.createElement("p");
   explainer.className = "provider-meta";
   explainer.style.cssText = "margin: 4px 0 12px; opacity: 0.8;";
   explainer.textContent =
-    "Self-hosted knowledge-graph MCP server. Setup installs graphify into an isolated venv (~/.fcc/graphify/venv); Start launches a local HTTP MCP process on 127.0.0.1 and registers it as an MCP backend. No container and no cloud API key required — leave the transport key empty for loopback access.";
+    "Self-hosted knowledge-graph MCP server. Setup installs graphify into an isolated venv (~/.fcc/graphify/venv); Start launches a local HTTP MCP process on 127.0.0.1 and registers it as a Claude Code MCP server (sibling of the MCP Router, not a backend inside it). No container and no cloud API key required — leave the transport key empty for loopback access.";
   statusSection.appendChild(explainer);
 
   if (status.last_error) {
@@ -2304,7 +2401,7 @@ function renderGraphifyView(status, projects, health) {
       showMessage(result.success ? "Graphify started" : result.error || "Start failed", result.success ? "ok" : "error");
       await loadGraphifyView();
     },
-    "Launch the local Graphify MCP HTTP server and register it as an MCP backend",
+    "Launch the local Graphify MCP HTTP server and register it as a Claude Code MCP server",
   );
   const stopBtn = graphifyActionButton(
     "Stop",
@@ -2313,7 +2410,7 @@ function renderGraphifyView(status, projects, health) {
       showMessage("Graphify stopped", "ok");
       await loadGraphifyView();
     },
-    "Stop the local Graphify MCP server and unregister the MCP backend",
+    "Stop the local Graphify MCP server and unregister the Claude Code MCP entry",
   );
   const restartBtn = graphifyActionButton(
     "Restart",
@@ -2376,8 +2473,13 @@ function renderGraphifyView(status, projects, health) {
     title.className = "provider-title";
     title.innerHTML = `<strong>${project.name || project.path}</strong>`;
     const pill = document.createElement("span");
-    pill.className = `status-pill ${statusClass(project.status)}`;
-    pill.textContent = project.status || "missing";
+    pill.className = `status-pill ${graphifyStatusPillClass(project.status)}`;
+    pill.textContent = graphifyStatusLabel(project.status);
+    if (project.status === "indexing") {
+      const spinner = document.createElement("span");
+      spinner.textContent = " ⟳";
+      pill.appendChild(spinner);
+    }
     title.appendChild(pill);
 
     const meta = document.createElement("div");
@@ -2389,6 +2491,21 @@ function renderGraphifyView(status, projects, health) {
       ? `Last indexed: ${new Date(project.last_indexed).toLocaleString()}`
       : "Not indexed yet";
 
+    const graphLine = document.createElement("div");
+    graphLine.className = "provider-meta";
+    graphLine.style.cssText = "opacity: 0.9;";
+    if (project.status === "ready") {
+      loadGraphSummary(graphifyPathB64(project.path), graphLine);
+    }
+
+    const errorLine = document.createElement("div");
+    errorLine.className = "message-area error";
+    errorLine.style.cssText = "display: none; margin-top: 4px; font-size: 0.85em;";
+    if (project.status === "error" && project.error_message) {
+      errorLine.textContent = project.error_message;
+      errorLine.style.display = "block";
+    }
+
     const cardActions = document.createElement("div");
     cardActions.className = "mcp-backend-actions";
     const indexBtn = document.createElement("button");
@@ -2397,8 +2514,13 @@ function renderGraphifyView(status, projects, health) {
     indexBtn.textContent = "Index";
     indexBtn.addEventListener("click", async () => {
       indexBtn.disabled = true;
-      indexBtn.textContent = "Indexing...";
+      const startedAt = Date.now();
       const pathB64 = graphifyPathB64(project.path);
+      const setIndexingLabel = () => {
+        const elapsed = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+        indexBtn.textContent = `Indexing… ${elapsed}s`;
+      };
+      setIndexingLabel();
       let pollInterval = null;
       try {
         const result = await api(`/admin/api/graphify/projects/${pathB64}/index`, {
@@ -2420,17 +2542,27 @@ function renderGraphifyView(status, projects, health) {
             );
             if (!task) return;
             if (task.status === "indexing") {
-              indexBtn.textContent = "Indexing...";
+              setIndexingLabel();
               return;
             }
             clearInterval(pollInterval);
             pollInterval = null;
-            showMessage(
-              task.status === "ready"
-                ? `Indexed ${project.name || project.path}`
-                : task.error_message || "Index failed",
-              task.status === "ready" ? "ok" : "error",
-            );
+            if (task.status === "ready") {
+              let detail = "";
+              try {
+                const summary = await api(
+                  `/admin/api/graphify/projects/${pathB64}/graph`,
+                );
+                if (summary && summary.present) {
+                  detail = ` — ${fmtNum(summary.node_count)} nodes · ${fmtNum(summary.link_count)} links`;
+                }
+              } catch {
+                // ignore summary fetch failure
+              }
+              showMessage(`Indexed ${project.name || project.path}${detail}`, "ok");
+            } else {
+              showMessage(task.error_message || "Index failed", "error");
+            }
             await loadGraphifyView();
           } catch (error) {
             clearInterval(pollInterval);
@@ -2460,7 +2592,7 @@ function renderGraphifyView(status, projects, health) {
     });
 
     cardActions.append(indexBtn, removeBtn);
-    card.append(title, meta, lastIndexed, cardActions);
+    card.append(title, meta, lastIndexed, graphLine, errorLine, cardActions);
     grid.appendChild(card);
   });
   projectSection.appendChild(grid);
@@ -2501,6 +2633,8 @@ function graphifyPathB64(path) {
 function onGraphifyViewActivated() {
   if (state.activeView === "graphify") {
     loadGraphifyView();
+  } else {
+    stopGraphifyAutoRefresh();
   }
 }
 

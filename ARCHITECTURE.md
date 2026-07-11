@@ -289,8 +289,12 @@ Graphify is an optional, per-project knowledge-graph MCP bridge. It lives in
   server lifecycle and the `~/.fcc/graphify/venv` isolated fallback install.
 - [api/graphify/projects.py](api/graphify/projects.py) loads and saves the
   project registry at `~/.fcc/graphify_projects.json`.
-- [api/graphify/mcp_backend.py](api/graphify/mcp_backend.py) builds the
-  `servers.graphify` entry for `~/.fcc/mcp_config.json`.
+- [api/graphify/claude_mcp.py](api/graphify/claude_mcp.py) registers the local
+  Graphify HTTP MCP server as a sibling of the MCP Router in the top-level
+  `mcpServers` map of `~/.claude.json` (Claude Code sees `mcp-router` and
+  `graphify` as two separate servers).
+- [api/graphify/graphs.py](api/graphify/graphs.py) reads a compact summary of
+  a project's `graphify-out/graph.json` for the admin panel.
 - [api/graphify/mcp_proxy.py](api/graphify/mcp_proxy.py) names the Graphify
   tools and provides argument-injection helpers.
 

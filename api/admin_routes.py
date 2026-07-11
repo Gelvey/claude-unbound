@@ -21,6 +21,7 @@ from api.graphify import (
     remove_project,
     save_project_registry,
 )
+from api.graphify.graphs import read_graph_summary
 from config.settings import Settings
 from config.settings import get_settings as get_cached_settings
 from providers.registry import ProviderRegistry, create_freebuff_manager
@@ -1002,6 +1003,23 @@ async def graphify_index_project_status(path_b64: str, request: Request):
     if task_status is not None:
         result["task"] = task_status
     return result
+
+
+@router.get("/admin/api/graphify/projects/{path_b64}/graph")
+async def graphify_project_graph(path_b64: str, request: Request):
+    """Return a compact summary of a project's knowledge graph.
+
+    ``{"present": false, "reason": "not_indexed"}`` when the graph has not been
+    built yet. 404 when the project is unknown. The full graph.json (can be many
+    MB) is never returned — only counts.
+    """
+    require_loopback_admin(request)
+    path = _decode_project_path(path_b64)
+    registry = load_project_registry()
+    project = next((p for p in registry.projects if p.path == path), None)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return read_graph_summary(project)
 
 
 # ---------------------------------------------------------------------------

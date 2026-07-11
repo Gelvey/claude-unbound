@@ -147,3 +147,70 @@ async def test_index_project_routes_to_manager(
     assert response.status_code == 200
     assert response.json()["success"] is True
     manager.start_index_project.assert_awaited_once()
+
+
+def test_graph_summary_route_returns_counts(
+    client: TestClient,
+    graphify_tmp_home: Path,
+) -> None:
+    import json
+
+    project_path = str(graphify_tmp_home / "repo")
+    Path(project_path).mkdir()
+    (Path(project_path) / "graphify-out").mkdir(parents=True)
+    (Path(project_path) / "graphify-out" / "graph.json").write_text(
+        json.dumps(
+            {
+                "nodes": [
+                    {"id": "a", "file_type": "code", "community": 1},
+                    {"id": "b", "file_type": "docs"},
+                ],
+                "links": [{"source": "a", "target": "b"}],
+                "hyperedges": [],
+                "built_at_commit": "abc1234",
+            }
+        )
+    )
+    client.post(
+        "/admin/api/graphify/projects", json={"path": project_path, "name": "Repo"}
+    )
+    path_b64 = (
+        base64.urlsafe_b64encode(project_path.encode("utf-8"))
+        .decode("ascii")
+        .rstrip("=")
+    )
+
+    response = client.get(f"/admin/api/graphify/projects/{path_b64}/graph")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["present"] is True
+    assert data["node_count"] == 2
+    assert data["link_count"] == 1
+    assert data["built_at_commit"] == "abc1234"
+
+
+def test_graph_summary_route_not_indexed(
+    client: TestClient, graphify_tmp_home: Path
+) -> None:
+    project_path = str(graphify_tmp_home / "repo")
+    Path(project_path).mkdir()
+    client.post(
+        "/admin/api/graphify/projects", json={"path": project_path, "name": "Repo"}
+    )
+    path_b64 = (
+        base64.urlsafe_b64encode(project_path.encode("utf-8"))
+        .decode("ascii")
+        .rstrip("=")
+    )
+
+    response = client.get(f"/admin/api/graphify/projects/{path_b64}/graph")
+
+    assert response.status_code == 200
+    assert response.json()["present"] is False
+
+
+def test_graph_summary_route_404_for_unknown_project(client: TestClient) -> None:
+    path_b64 = base64.urlsafe_b64encode(b"/no/such/repo").decode("ascii").rstrip("=")
+    response = client.get(f"/admin/api/graphify/projects/{path_b64}/graph")
+    assert response.status_code == 404

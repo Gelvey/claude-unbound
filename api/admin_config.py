@@ -62,6 +62,7 @@ class ConfigFieldSpec:
     settings_attr: str | None = None
     default: str = ""
     options: tuple[str, ...] = ()
+    model_options: bool = False
     secret: bool = False
     advanced: bool = False
     restart_required: bool = False
@@ -388,7 +389,11 @@ FIELDS: tuple[ConfigFieldSpec, ...] = (
         settings_attr="graphify_enabled",
         default="false",
         restart_required=True,
-        description="Start the Graphify MCP server and register it as an MCP backend.",
+        description=(
+            "Start the Graphify MCP server and register it as a Claude Code "
+            "MCP server (sibling to the MCP Router in ~/.claude.json, not a "
+            "backend inside the router)."
+        ),
     ),
     ConfigFieldSpec(
         "GRAPHIFY_SERVER_PORT",
@@ -398,7 +403,11 @@ FIELDS: tuple[ConfigFieldSpec, ...] = (
         settings_attr="graphify_server_port",
         default="0",
         advanced=True,
-        description="0 selects a free port automatically.",
+        description=(
+            "Port for the local Graphify MCP HTTP server. 0 selects a free "
+            "port automatically; a fixed non-zero port is recommended so "
+            "Claude Code keeps pointing at Graphify across restarts."
+        ),
     ),
     ConfigFieldSpec(
         "GRAPHIFY_PYTHON_PATH",
@@ -447,6 +456,73 @@ FIELDS: tuple[ConfigFieldSpec, ...] = (
         default=str(10 * 1024 * 1024 * 1024),
         advanced=True,
         description="Maximum project size allowed before indexing. 0 disables the guard.",
+    ),
+    ConfigFieldSpec(
+        "GRAPHIFY_LLM_BACKEND",
+        "Extraction LLM Backend",
+        "graphify",
+        "select",
+        settings_attr="graphify_llm_backend",
+        default="",
+        options=(
+            "",
+            "cloudflare",
+            "gemini",
+            "deepseek",
+            "kimi",
+            "openai",
+            "claude",
+            "ollama",
+            "azure",
+        ),
+        description=(
+            "LLM used for the semantic extraction pass over docs/PDFs/images and "
+            "community naming. 'cloudflare' reuses the Cloudflare Workers AI key/"
+            "account-id from the Providers tab; gemini/deepseek/kimi likewise reuse "
+            "their provider key when the API key field below is empty. 'ollama' is "
+            "fully local (no key). Leave empty with Code-Only on for no LLM."
+        ),
+    ),
+    ConfigFieldSpec(
+        "GRAPHIFY_LLM_MODEL",
+        "Extraction Model",
+        "graphify",
+        "text",
+        settings_attr="graphify_llm_model",
+        default="",
+        model_options=True,
+        description=(
+            "Model id passed to graphify as --model. For 'cloudflare' use a Workers AI "
+            "model id (e.g. @cf/meta/llama-3.3-70b-instruct-fp8-fast); pick a "
+            "vision-capable model (e.g. @cf/meta/llama-3.2-90b-vision-instruct) when "
+            "the corpus contains images. Autocomplete mirrors the Model Config "
+            "model fields."
+        ),
+    ),
+    ConfigFieldSpec(
+        "GRAPHIFY_LLM_API_KEY",
+        "Extraction API Key",
+        "graphify",
+        "secret",
+        settings_attr="graphify_llm_api_key",
+        secret=True,
+        description=(
+            "API key for the extraction backend. Optional for cloudflare/gemini/"
+            "deepseek/kimi, which fall back to the matching provider key. Required for "
+            "openai/claude/azure. Ollama accepts any non-empty value."
+        ),
+    ),
+    ConfigFieldSpec(
+        "GRAPHIFY_CODE_ONLY",
+        "Code-Only Index",
+        "graphify",
+        "boolean",
+        settings_attr="graphify_code_only",
+        default="false",
+        description=(
+            "Index code only via local AST parsing (no LLM API key). Skips "
+            "docs/PDFs/images entirely."
+        ),
     ),
     ConfigFieldSpec(
         "NVIDIA_NIM_PROXY",
@@ -662,6 +738,7 @@ FIELDS: tuple[ConfigFieldSpec, ...] = (
         "models",
         settings_attr="model",
         default="nvidia_nim/nvidia/nemotron-3-super-120b-a12b",
+        model_options=True,
         description="Fallback provider/model route for all Claude model names.",
     ),
     ConfigFieldSpec(
@@ -669,6 +746,7 @@ FIELDS: tuple[ConfigFieldSpec, ...] = (
         "Opus Override",
         "models",
         settings_attr="model_opus",
+        model_options=True,
         description="Optional provider/model route for Opus requests.",
     ),
     ConfigFieldSpec(
@@ -676,6 +754,7 @@ FIELDS: tuple[ConfigFieldSpec, ...] = (
         "Sonnet Override",
         "models",
         settings_attr="model_sonnet",
+        model_options=True,
         description="Optional provider/model route for Sonnet requests.",
     ),
     ConfigFieldSpec(
@@ -683,6 +762,7 @@ FIELDS: tuple[ConfigFieldSpec, ...] = (
         "Haiku Override",
         "models",
         settings_attr="model_haiku",
+        model_options=True,
         description="Optional provider/model route for Haiku requests.",
     ),
     ConfigFieldSpec(
@@ -1045,6 +1125,7 @@ FIELDS: tuple[ConfigFieldSpec, ...] = (
         "models",
         settings_attr="long_context_model",
         default="",
+        model_options=True,
         advanced=True,
         description=(
             "Provider/model ref to reroute oversized requests to. Empty disables."
@@ -1543,6 +1624,7 @@ def load_config_response() -> dict[str, Any]:
                 "restart_required": field.restart_required,
                 "session_sensitive": field.session_sensitive,
                 "options": list(field.options),
+                "model_options": field.model_options,
                 "description": field.description,
             }
         )

@@ -39,6 +39,18 @@ from config.settings import Settings
                 "graphify_llm_api_key": "dummy",
             },
         ),
+        (
+            {
+                "GRAPHIFY_LLM_BACKEND": "cloudflare",
+                "GRAPHIFY_LLM_MODEL": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+                "GRAPHIFY_CODE_ONLY": "true",
+            },
+            {
+                "graphify_llm_backend": "cloudflare",
+                "graphify_llm_model": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+                "graphify_code_only": True,
+            },
+        ),
     ],
 )
 def test_graphify_settings_parsing(
@@ -55,6 +67,8 @@ def test_graphify_settings_parsing(
         "GRAPHIFY_API_KEY",
         "GRAPHIFY_LLM_BACKEND",
         "GRAPHIFY_LLM_API_KEY",
+        "GRAPHIFY_LLM_MODEL",
+        "GRAPHIFY_CODE_ONLY",
         "GRAPHIFY_AUTO_INDEX_ON_START",
     }:
         monkeypatch.delenv(key, raising=False)
@@ -70,8 +84,15 @@ def test_graphify_llm_fields_default_empty(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    for key in {"GRAPHIFY_LLM_BACKEND", "GRAPHIFY_LLM_API_KEY"}:
+    for key in {
+        "GRAPHIFY_LLM_BACKEND",
+        "GRAPHIFY_LLM_API_KEY",
+        "GRAPHIFY_LLM_MODEL",
+        "GRAPHIFY_CODE_ONLY",
+    }:
         monkeypatch.delenv(key, raising=False)
     settings = Settings()
     assert settings.graphify_llm_backend == ""
     assert settings.graphify_llm_api_key == ""
+    assert settings.graphify_llm_model == ""
+    assert settings.graphify_code_only is False

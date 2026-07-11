@@ -219,7 +219,14 @@ class Settings(BaseSettings):
     graphify_server_port: int = Field(
         default=0,
         validation_alias="GRAPHIFY_SERVER_PORT",
-        description="0 selects a free port automatically.",
+        description=(
+            "Port for the local Graphify MCP HTTP server. 0 selects a free "
+            "port automatically. A fixed non-zero port is recommended when "
+            "registering Graphify as a sibling Claude Code MCP server, so "
+            "Claude Code's cached mcpServers entry keeps pointing at "
+            "Graphify across restarts (Claude Code reads mcpServers at "
+            "session start)."
+        ),
     )
     graphify_python_path: str = Field(
         default="",
@@ -239,11 +246,13 @@ class Settings(BaseSettings):
         default="",
         validation_alias="GRAPHIFY_LLM_BACKEND",
         description=(
-            "Optional LLM backend for the semantic extraction pass "
-            "(graphify extract) over docs/PDFs/images and community naming: "
-            "claude|openai|gemini|deepseek|kimi|ollama|azure. Leave empty to "
-            "auto-detect from the environment, or for code-only indexing. "
-            "Use 'ollama' for a fully-local, no-API-key setup."
+            "LLM backend for the semantic extraction pass (graphify extract) over "
+            "docs/PDFs/images and community naming: cloudflare|gemini|deepseek|kimi|"
+            "openai|claude|ollama|azure. 'cloudflare' reuses the Cloudflare Workers AI "
+            "key/account-id from the Providers tab via the OpenAI-compatible endpoint. "
+            "gemini/deepseek/kimi likewise reuse their matching provider key when "
+            "GRAPHIFY_LLM_API_KEY is empty. Leave empty or set GRAPHIFY_CODE_ONLY for "
+            "no LLM. Use 'ollama' for a fully-local, no-API-key setup."
         ),
     )
     graphify_llm_api_key: str = Field(
@@ -251,8 +260,28 @@ class Settings(BaseSettings):
         validation_alias="GRAPHIFY_LLM_API_KEY",
         description=(
             "API key for the configured GRAPHIFY_LLM_BACKEND, injected into the "
-            "extractor subprocess as the backend's env var. Ignored when "
-            "GRAPHIFY_LLM_BACKEND is empty. Ollama accepts any non-empty value."
+            "extractor subprocess as the backend's env var. Optional for cloudflare/"
+            "gemini/deepseek/kimi, which fall back to the matching Claude Unbound "
+            "provider key. Ignored when GRAPHIFY_LLM_BACKEND is empty. Ollama accepts "
+            "any non-empty value."
+        ),
+    )
+    graphify_llm_model: str = Field(
+        default="",
+        validation_alias="GRAPHIFY_LLM_MODEL",
+        description=(
+            "Model id passed to graphify extract as --model. For 'cloudflare' this is "
+            "a Cloudflare Workers AI model id (e.g. "
+            "@cf/meta/llama-3.3-70b-instruct-fp8-fast); use a vision-capable model "
+            "(e.g. @cf/meta/llama-3.2-90b-vision-instruct) when the corpus has images."
+        ),
+    )
+    graphify_code_only: bool = Field(
+        default=False,
+        validation_alias="GRAPHIFY_CODE_ONLY",
+        description=(
+            "Index code only via local AST parsing (graphify extract --code-only); "
+            "skip docs/PDFs/images entirely. No LLM API key required."
         ),
     )
     graphify_auto_index_on_start: bool = Field(

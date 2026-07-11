@@ -19,15 +19,18 @@ from loguru import logger
 
 from config.settings import Settings
 
+from .claude_mcp import (
+    graphify_claude_server_registered,
+    register_graphify_claude_server,
+    unregister_graphify_claude_server,
+)
 from .config import GraphifyProject
-from .mcp_backend import add_graphify_mcp_backend, remove_graphify_mcp_backend
 from .paths import graphify_venv_dir
 from .projects import (
     load_project_registry,
     save_project_registry,
     update_project_status,
 )
-from .router import reload_mcp_router_async, restart_mcp_router_async
 
 _GRAPHIFY_PACKAGE = "graphifyy[mcp]"
 
@@ -44,6 +47,39 @@ _GRAPHIFY_LLM_ENV_KEYS: dict[str, str] = {
     "ollama": "OLLAMA_API_KEY",
     "azure": "AZURE_OPENAI_API_KEY",
 }
+
+# graphify has no native "cloudflare" backend. We ride its OpenAI-compatible ``openai``
+# backend (vision-capable, ``_call_openai_compat``) and redirect it at Cloudflare's
+# OpenAI-compatible Workers AI endpoint via ``OPENAI_BASE_URL``. See graphify/llm.py
+# ``BACKENDS["openai"]``. Maps a configured backend to the graphify ``--backend`` value
+# we pass on the CLI.
+_GRAPHIFY_BACKEND_ALIAS: dict[str, str] = {
+    "cloudflare": "openai",
+    "anthropic": "claude",
+}
+
+# Backends whose extractor routes through graphify's ``_call_openai_compat`` and so
+# requires the ``openai`` python package in the graphify venv. Cloudflare is included
+# because it rides the ``openai`` backend. ``claude``/``anthropic`` need ``anthropic``.
+_GRAPHIFY_OPENAI_SDK_BACKENDS: frozenset[str] = frozenset(
+    {"cloudflare", "openai", "gemini", "deepseek", "kimi", "ollama"}
+)
+
+# When GRAPHIFY_LLM_API_KEY is empty, fall back to the matching Claude Unbound provider
+# key already configured on the Providers tab, so the user does not re-enter it.
+_GRAPHIFY_PROVIDER_KEY_FALLBACK: dict[str, str] = {
+    "cloudflare": "cloudflare_ai_api_key",
+    "gemini": "gemini_api_key",
+    "deepseek": "deepseek_api_key",
+    "kimi": "kimi_api_key",
+}
+
+# graphifyy extra that installs the python SDK a backend's extractor imports.
+_GRAPHIFY_LLM_EXTRAS: dict[str, str] = {
+    "claude": "anthropic",
+    "anthropic": "anthropic",
+}
+_GRAPHIFY_OPENAI_EXTRA = "openai"
 
 # MCP ``initialize`` request body used by the readiness/health probes. Graphify
 # serves a Streamable HTTP endpoint at /mcp that rejects plain GET with 406
@@ -219,9 +255,11 @@ class GraphifyManager:
             await self.stop()
             return False
 
-        # Server is confirmed up: publish the backend and reload the router.
-        add_graphify_mcp_backend(port, self._settings.graphify_api_key)
-        await self._notify_router_reload()
+        # Server is confirmed up: register it as a sibling Claude Code MCP
+        # server (in ~/.claude.json mcpServers, alongside mcp-router). Graphify
+        # is not a backend inside the MCP Router — Claude Code connects to it
+        # directly over loopback HTTP.
+        register_graphify_claude_server(port, self._settings.graphify_api_key)
 
         self._last_error = None
         logger.info(
@@ -304,6 +342,10 @@ class GraphifyManager:
             "base_url": self._base_url,
             "python": self._python_path or self._resolve_python(),
             "last_error": self._last_error,
+            "mcp_registered": graphify_claude_server_registered(),
+            "llm_backend": self._settings.graphify_llm_backend,
+            "llm_model": self._settings.graphify_llm_model,
+            "code_only": self._settings.graphify_code_only,
             "projects_count": len(registry.projects),
             "projects_summary": [
                 {
@@ -330,6 +372,20 @@ class GraphifyManager:
         python = setup_result["python"]
         repo_path = Path(project.path)
 
+        # Ensure the graphify venv has the LLM SDK the configured backend imports.
+        # The venv is created with only graphifyy[mcp] (no openai/anthropic), so
+        # without this every cloud backend raises ImportError mid-extract.
+        try:
+            await self._ensure_graphify_llm_extra(python)
+        except Exception as exc:
+            error = str(exc)
+            registry = load_project_registry()
+            update_project_status(
+                registry, project.path, status="error", error_message=error
+            )
+            save_project_registry(registry)
+            return {"success": False, "error": error}
+
         max_bytes = getattr(self._settings, "graphify_max_project_bytes", 0)
         if max_bytes > 0:
             size = _directory_size(repo_path)
@@ -354,10 +410,7 @@ class GraphifyManager:
         try:
             proc = await asyncio.create_subprocess_exec(
                 python,
-                "-m",
-                "graphify",
-                mode,
-                project.path,
+                *self._build_extract_args(project, mode),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=self._extract_env(),
@@ -472,39 +525,125 @@ class GraphifyManager:
             headers=self._mcp_probe_headers(),
         )
 
+    def _resolve_llm_api_key(self, backend: str) -> str:
+        """Return the API key for *backend*, reusing a Claude Unbound provider key.
+
+        ``GRAPHIFY_LLM_API_KEY`` wins; when it is empty we fall back to the matching
+        provider key already configured on the Providers tab (cloudflare/gemini/
+        deepseek/kimi), so the user does not re-enter it.
+        """
+        key = self._settings.graphify_llm_api_key.strip()
+        if key:
+            return key
+        attr = _GRAPHIFY_PROVIDER_KEY_FALLBACK.get(backend)
+        if attr:
+            return getattr(self._settings, attr, "").strip()
+        return ""
+
+    def _cloudflare_openai_base(self) -> str:
+        """Return the Cloudflare Workers AI OpenAI-compatible base URL.
+
+        Honours an explicit ``CLOUDFLARE_AI_BASE_URL`` override; otherwise composes
+        ``https://api.cloudflare.com/client/v4/accounts/<account_id>/ai/v1`` from
+        the configured account id — the same endpoint Claude Unbound's own
+        Cloudflare provider speaks.
+        """
+        override = self._settings.cloudflare_ai_base_url.strip()
+        if override:
+            return override
+        account = self._settings.cloudflare_ai_account_id.strip()
+        return f"https://api.cloudflare.com/client/v4/accounts/{account}/ai/v1"
+
     def _extract_env(self) -> dict[str, str]:
         """Build the environment for ``graphify extract``/``update`` subprocesses.
 
-        Inherits the parent environment and injects the configured LLM backend
-        API key (if any) under the env var graphify's extractor reads, so the
-        semantic pass over docs/PDFs/images and community naming can run. The
-        ``GRAPHIFY_API_KEY`` transport auth is irrelevant to the indexer.
+        Inherits the parent environment and injects the configured LLM backend's
+        credentials so the semantic pass over docs/PDFs/images and community naming
+        can run. For ``cloudflare`` we redirect graphify's ``openai`` backend at the
+        Cloudflare OpenAI-compatible endpoint via ``OPENAI_BASE_URL`` (graphify has
+        no native cloudflare backend). The ``GRAPHIFY_API_KEY`` transport auth is
+        irrelevant to the indexer.
         """
         env = os.environ.copy()
         backend = self._settings.graphify_llm_backend.strip().lower()
-        api_key = self._settings.graphify_llm_api_key
-        if backend and api_key:
-            env_key = _GRAPHIFY_LLM_ENV_KEYS.get(backend)
-            if env_key:
-                env[env_key] = api_key
+        if not backend:
+            return env
+        api_key = self._resolve_llm_api_key(backend)
+        if backend == "cloudflare":
+            env["OPENAI_API_KEY"] = api_key
+            env["OPENAI_BASE_URL"] = self._cloudflare_openai_base()
+            model = self._settings.graphify_llm_model.strip()
+            if model:
+                env["GRAPHIFY_OPENAI_MODEL"] = model
+            return env
+        env_key = _GRAPHIFY_LLM_ENV_KEYS.get(backend)
+        if env_key and api_key:
+            env[env_key] = api_key
         return env
 
-    async def _notify_router_reload(self) -> None:
-        """Tell the MCP router to reload config; fall back to process restart."""
-        reload_result = await reload_mcp_router_async()
-        if reload_result.get("reloaded"):
-            logger.info("GRAPHIFY_MANAGER: MCP router reloaded via hot-reload")
-            return
+    def _build_extract_args(self, project: GraphifyProject, mode: str) -> list[str]:
+        """Return the ``graphify <mode> <path>`` argv after the python interpreter.
 
+        ``--backend``/``--model`` apply only to ``extract`` (``update`` is code-only
+        by nature). ``--backend`` is passed explicitly so graphify's
+        ``detect_backend()`` precedence (gemini→kimi→claude→openai→…) cannot be
+        shadowed by a stray key inherited from the parent environment; ``cloudflare``
+        maps to graphify's ``openai`` backend.
+        """
+        args: list[str] = ["-m", "graphify", mode, project.path]
+        if mode != "extract":
+            return args
+        if self._settings.graphify_code_only:
+            args.append("--code-only")
+            return args
+        backend = self._settings.graphify_llm_backend.strip().lower()
+        if backend:
+            args.extend(["--backend", _GRAPHIFY_BACKEND_ALIAS.get(backend, backend)])
+            model = self._settings.graphify_llm_model.strip()
+            if model:
+                args.extend(["--model", model])
+        return args
+
+    async def _ensure_graphify_llm_extra(self, python: str) -> None:
+        """Install the LLM SDK the configured backend imports into the graphify venv.
+
+        The isolated venv is created with only ``graphifyy[mcp]`` (no ``openai`` or
+        ``anthropic``), so every cloud backend would raise ``ImportError`` mid-extract.
+        OpenAI-compatible backends (cloudflare/openai/gemini/kimi/deepseek/ollama) need
+        the ``openai`` package; ``claude`` needs ``anthropic``. ``azure``/``bedrock``/
+        ``claude-cli`` are out of scope for v1 (boto3/CLI) and are left untouched.
+        No-op for code-only indexing or an unset backend.
+        """
+        backend = self._settings.graphify_llm_backend.strip().lower()
+        if self._settings.graphify_code_only or not backend:
+            return
+        if backend in _GRAPHIFY_OPENAI_SDK_BACKENDS:
+            module, extra = "openai", _GRAPHIFY_OPENAI_EXTRA
+        else:
+            extra = _GRAPHIFY_LLM_EXTRAS.get(backend)
+            module = extra
+            if not module:
+                return
+        if _is_module_importable(python, module):
+            return
         logger.info(
-            "GRAPHIFY_MANAGER: hot reload unavailable ({}), restarting router",
-            reload_result.get("error"),
+            "GRAPHIFY_MANAGER: installing graphifyy[{}] into venv for backend {}",
+            extra,
+            backend,
         )
-        restart_result = await restart_mcp_router_async()
-        if not restart_result.get("restarted"):
-            logger.warning(
-                "GRAPHIFY_MANAGER: router restart failed: {}",
-                restart_result.get("error"),
+        proc = await asyncio.create_subprocess_exec(
+            _pip_path(python),
+            "install",
+            "--quiet",
+            f"graphifyy[{extra}]",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _stdout, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"Failed to install graphifyy[{extra}] for backend {backend}: "
+                f"{stderr.decode('utf-8', errors='replace')}"
             )
 
     def _start_watcher(self) -> None:
@@ -534,20 +673,19 @@ class GraphifyManager:
 
     async def _remove_backend_silently(self) -> None:
         try:
-            remove_graphify_mcp_backend()
-            await self._notify_router_reload()
+            unregister_graphify_claude_server()
         except Exception as exc:
             logger.warning(
-                "GRAPHIFY_MANAGER: failed to remove MCP backend: {}: {}",
+                "GRAPHIFY_MANAGER: failed to unregister Claude Code MCP server: {}: {}",
                 type(exc).__name__,
                 exc,
             )
 
 
-def _is_graphify_importable(python: str) -> bool:
+def _is_module_importable(python: str, module: str) -> bool:
     try:
         proc = subprocess.run(
-            [python, "-c", "import graphify"],
+            [python, "-c", f"import {module}"],
             capture_output=True,
             text=True,
             timeout=10,
@@ -558,6 +696,17 @@ def _is_graphify_importable(python: str) -> bool:
     except subprocess.TimeoutExpired:
         return False
     return proc.returncode == 0
+
+
+def _is_graphify_importable(python: str) -> bool:
+    return _is_module_importable(python, "graphify")
+
+
+def _pip_path(python: str) -> str:
+    """Return the pip executable sitting next to *python* in a venv."""
+    return str(
+        Path(python).parent / ("pip.exe" if sys.platform.startswith("win") else "pip")
+    )
 
 
 def _venv_python_path(venv_dir: Path) -> str:
@@ -622,9 +771,7 @@ async def _ensure_graphify_venv(venv_dir: Path) -> str:
         decoded = stderr.decode("utf-8", errors="replace")
         raise RuntimeError(f"Failed to create Graphify venv: {decoded}")
 
-    pip = str(
-        Path(python).parent / ("pip.exe" if sys.platform.startswith("win") else "pip")
-    )
+    pip = _pip_path(python)
     logger.info("GRAPHIFY_MANAGER: installing {} into isolated venv", _GRAPHIFY_PACKAGE)
     proc = await asyncio.create_subprocess_exec(
         pip,

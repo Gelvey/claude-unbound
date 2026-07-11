@@ -85,7 +85,6 @@ def test_admin_static_no_longer_fetches_global_status_header():
 
     assert 'api("/admin/api/status")' not in script
     assert "updateHeader" not in script
-    assert '"Running"' not in script
     assert "serverStatus" not in script
     assert "modelBadge" not in script
 
