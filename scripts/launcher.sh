@@ -15,9 +15,9 @@ FORK_URL="${FCC_FORK_URL:-https://github.com/Gelvey/claude-unbound}"
 SOCKET="${XDG_RUNTIME_DIR:-/tmp}/fcc-kitty-$$-$(date +%s%N 2>/dev/null || date +%s).sock"
 
 # ── Per-tab colour palette (active / inactive) ──────────────────────────────
-# Server=blue, MCP Router=green, Claude Code=orange. Applied after each
-# spawn via color_tab() (matched by title); kitty @ launch is synchronous so
-# the title match is race-free.
+# Server=blue, MCP Router=green, Claude Code=orange. Applied immediately
+# after each spawn via color_tab() (matches by tab title); kitten @ launch is
+# synchronous so the newly-spawned tab is already titled when we colour it.
 SERVER_ACTIVE_BG="#2f6fbd";   SERVER_ACTIVE_FG="#ffffff"
 SERVER_INACTIVE_BG="#16314f";  SERVER_INACTIVE_FG="#6f9fd6"
 ROUTER_ACTIVE_BG="#3a9c4e";    ROUTER_ACTIVE_FG="#ffffff"
@@ -25,14 +25,39 @@ ROUTER_INACTIVE_BG="#14331c";  ROUTER_INACTIVE_FG="#5fbf73"
 CLAUDE_ACTIVE_BG="#e08a2b";    CLAUDE_ACTIVE_FG="#1a1205"
 CLAUDE_INACTIVE_BG="#3a2410";  CLAUDE_INACTIVE_FG="#e0a85f"
 
-# Colour a tab in the main kitty window by title.
-# Args: title  active_bg active_fg inactive_bg inactive_fg
+# Colour a tab by title, retrying briefly if the tab hasn't been titled yet.
+# Args: title active_bg active_fg inactive_bg inactive_fg
 color_tab() {
-    kitten @ --to "unix:$SOCKET" set-tab-color \
-        --match "title:^$1\$" \
-        "active_bg=$2" "active_fg=$3" \
-        "inactive_bg=$4" "inactive_fg=$5" \
-        2>/dev/null || true
+    local title="$1"
+    shift
+    local _tries=0
+    while [ $_tries -lt 10 ]; do
+        if kitten @ --to "unix:$SOCKET" set-tab-color \
+                --match "title:^$title\$" \
+                "active_bg=$1" "active_fg=$2" \
+                "inactive_bg=$3" "inactive_fg=$4" \
+                >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 0.1
+        _tries=$((_tries + 1))
+    done
+    # Best-effort: don't fail the launcher if colouring doesn't work.
+    return 0
+}
+
+# Wait for kitty's remote-control socket to appear and accept commands.
+# Args: timeout_seconds (default 10)
+wait_for_socket() {
+    local timeout="${1:-10}"
+    local deadline=$((SECONDS + timeout))
+    while [ $SECONDS -lt $deadline ]; do
+        if [ -S "$SOCKET" ] && kitten @ --to "unix:$SOCKET" ls >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 0.2
+    done
+    return 1
 }
 
 # ── Portable helpers (macOS + Linux) ─────────────────────────────────────────
@@ -243,12 +268,26 @@ if [ ! -f "$MCP_CONFIG_FILE" ]; then
 fi
 
 # ── Open kitty with the 3 tabs ─────────────────────────────────────────────────
-# --config NONE loads no kitty.conf, so the tab bar styling and the
-# Ctrl+Shift+T keybinding are injected via --override. Ctrl+Shift+T opens a
-# ready, orange, connected Claude Code tab (scripts/kitty/_claude_tab.sh)
-# instead of the default bare shell.
+# A temp kitty.conf holds the Ctrl+Shift+T keybinding so that the tab title
+# "Claude Code" (with a space) is parsed correctly — kitty's config parser
+# handles quoted strings, but --override values passed from the shell cannot
+# reliably embed quotes.
+#
+# Ctrl+Shift+T opens a ready, orange, connected Claude Code tab
+# (scripts/kitty/_claude_tab.sh) instead of the default bare shell.
+KITTY_CONF=$(mktemp "${TMPDIR:-/tmp}/fcc-kitty-conf.XXXXXX")
+cat > "$KITTY_CONF" <<EOF
+map ctrl+shift>t launch --type=tab --tab-title "Claude Code" --cwd $REPO_DIR bash $REPO_DIR/scripts/kitty/_claude_tab.sh
+EOF
+
+# Ensure the temp config is removed whenever this script exits.
+cleanup_kitty_conf() {
+    [ -n "${KITTY_CONF:-}" ] && rm -f "$KITTY_CONF"
+}
+trap cleanup_kitty_conf EXIT INT TERM
+
 kitty \
-    --config NONE \
+    --config "$KITTY_CONF" \
     --listen-on "unix:$SOCKET" \
     --override "allow_remote_control=socket-only" \
     --override "tab_bar_style=powerline" \
@@ -257,14 +296,20 @@ kitty \
     --override "tab_title_max_length=28" \
     --override "active_tab_font_style=bold" \
     --override "tab_separator= " \
-    --override "map ctrl+shift>t launch --type=tab --tab-title='Claude Code' --cwd=$REPO_DIR bash $REPO_DIR/scripts/kitty/_claude_tab.sh" \
     --title "Claude Unbound" \
     bash -c "echo '=== Claude Unbound CLI (waiting ${FCC_CLIENT_WARMUP_S:-5}s for fcc-server) ===' && sleep ${FCC_CLIENT_WARMUP_S:-5} && uv run fcc-claude; exec bash" &
 
 KITTY_PID=$!
-sleep 1
+
 if ! kill -0 "$KITTY_PID" 2>/dev/null; then
     notify critical "Claude Unbound" "kitty failed to start"
+    exit 1
+fi
+
+# Wait for the remote-control socket before doing anything with kitten @.
+echo "[fcc] kitty started (pid $KITTY_PID), waiting for remote-control socket..."
+if ! wait_for_socket 10; then
+    notify critical "Claude Unbound" "kitty remote-control socket did not become ready"
     exit 1
 fi
 
@@ -279,7 +324,7 @@ spawn_tab() {
     local title="$1"; shift
     local _err
     _err=$(mktemp 2>/dev/null) || return 1
-    if kitten @ --to "unix:$SOCKET" launch --type=tab --tab-title="$title" -- "$@" 2>"$_err"; then
+    if kitten @ --to "unix:$SOCKET" launch --type=tab --tab-title "$title" -- "$@" 2>"$_err"; then
         rm -f "$_err"
     else
         echo "[fcc] WARN: failed to spawn $title tab:"; cat "$_err"; rm -f "$_err"

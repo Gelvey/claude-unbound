@@ -112,6 +112,9 @@ class AppRuntime:
     message_handler: ClaudeMessageHandler | None = None
     cli_manager: CLISessionManager | None = None
     graphify_manager: GraphifyManager | None = field(default=None, init=False)
+    _validation_task: asyncio.Task[None] | None = field(default=None, init=False)
+    _messaging_task: asyncio.Task[None] | None = field(default=None, init=False)
+    _graphify_task: asyncio.Task[None] | None = field(default=None, init=False)
 
     @classmethod
     def for_app(
@@ -129,12 +132,20 @@ class AppRuntime:
         try:
             warn_if_process_auth_token(self.settings)
             warn_if_freebuff_session_hygiene(self.settings)
-            await self._validate_configured_models_best_effort()
+            # Run network-heavy startup work in the background so uvicorn can
+            # finish lifespan startup immediately and the admin UI/API become
+            # responsive without waiting for provider/model validation or bot
+            # platform handshakes to complete.
+            self._validation_task = asyncio.create_task(
+                self._validate_configured_models_best_effort()
+            )
             self._provider_registry.start_model_list_refresh(self.settings)
-            await self._start_messaging_if_configured()
+            self._messaging_task = asyncio.create_task(
+                self._start_messaging_if_configured()
+            )
             await self._run_module_startup_hooks()
             self._publish_state()
-            await self._start_graphify_if_enabled()
+            self._graphify_task = asyncio.create_task(self._start_graphify_if_enabled())
             logging.getLogger("uvicorn.error").info(
                 "Admin UI: %s (local-only)", admin_url
             )
@@ -166,6 +177,25 @@ class AppRuntime:
         verbose = self.settings.log_api_error_tracebacks
 
         logger.info("Shutdown requested, cleaning up...")
+        # Ensure any background startup tasks have finished (or at least had
+        # a chance to run) before tearing down core services. Cap the wait so
+        # a stuck network handshake cannot block shutdown indefinitely.
+        for task in (self._validation_task, self._messaging_task, self._graphify_task):
+            if task is not None and not task.done():
+                try:
+                    await asyncio.wait_for(task, timeout=5.0)
+                except TimeoutError:
+                    logger.warning(
+                        "Startup task did not finish before shutdown timeout"
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.warning(
+                        "Startup task failed during shutdown: exc_type={}",
+                        type(exc).__name__,
+                    )
+
         # Run module shutdown hooks while core services are still alive so
         # modules can flush state through the provider registry / messaging.
         await self._run_module_shutdown_hooks()
@@ -249,6 +279,9 @@ class AppRuntime:
 
             if self.messaging_platform:
                 await self._start_message_handler()
+            # Publish state after messaging is fully initialized so tests and
+            # early requests see the handler without waiting for startup.
+            self._publish_state()
 
         except ImportError as e:
             if self.settings.log_api_error_tracebacks:
@@ -384,6 +417,8 @@ class AppRuntime:
             return
         self.graphify_manager = GraphifyManager(self.settings)
         self.app.state.graphify_manager = self.graphify_manager
+        # Re-publish in case graphify startup ran in the background.
+        self._publish_state()
         try:
             started = await self.graphify_manager.start()
             if not started:
