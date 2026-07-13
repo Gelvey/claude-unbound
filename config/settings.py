@@ -263,8 +263,10 @@ class Settings(BaseSettings):
         description=(
             "LLM backend for the semantic extraction pass (graphify extract) over "
             "docs/PDFs/images and community naming: cloudflare|gemini|deepseek|kimi|"
-            "openai|claude|ollama|azure. 'cloudflare' reuses the Cloudflare Workers AI "
-            "key/account-id from the Providers tab via the OpenAI-compatible endpoint. "
+            "openai|claude|ollama|lmstudio|azure. 'cloudflare' reuses the Cloudflare "
+            "Workers AI key/account-id from the Providers tab via the OpenAI-compatible "
+            "endpoint. 'lmstudio' rides graphify's openai backend pointed at the LM "
+            "Studio server configured in LM_STUDIO_BASE_URL (no API key required). "
             "gemini/deepseek/kimi likewise reuse their matching provider key when "
             "GRAPHIFY_LLM_API_KEY is empty. Leave empty or set GRAPHIFY_CODE_ONLY for "
             "no LLM. Use 'ollama' for a fully-local, no-API-key setup."

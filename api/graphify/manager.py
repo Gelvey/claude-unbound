@@ -45,6 +45,7 @@ _GRAPHIFY_LLM_ENV_KEYS: dict[str, str] = {
     "deepseek": "DEEPSEEK_API_KEY",
     "kimi": "MOONSHOT_API_KEY",
     "ollama": "OLLAMA_API_KEY",
+    "lmstudio": "OPENAI_API_KEY",
     "azure": "AZURE_OPENAI_API_KEY",
 }
 
@@ -55,6 +56,7 @@ _GRAPHIFY_LLM_ENV_KEYS: dict[str, str] = {
 # we pass on the CLI.
 _GRAPHIFY_BACKEND_ALIAS: dict[str, str] = {
     "cloudflare": "openai",
+    "lmstudio": "openai",
     "anthropic": "claude",
 }
 
@@ -62,7 +64,7 @@ _GRAPHIFY_BACKEND_ALIAS: dict[str, str] = {
 # requires the ``openai`` python package in the graphify venv. Cloudflare is included
 # because it rides the ``openai`` backend. ``claude``/``anthropic`` need ``anthropic``.
 _GRAPHIFY_OPENAI_SDK_BACKENDS: frozenset[str] = frozenset(
-    {"cloudflare", "openai", "gemini", "deepseek", "kimi", "ollama"}
+    {"cloudflare", "openai", "gemini", "deepseek", "kimi", "ollama", "lmstudio"}
 )
 
 # When GRAPHIFY_LLM_API_KEY is empty, fall back to the matching Claude Unbound provider
@@ -584,6 +586,17 @@ class GraphifyManager:
         if backend == "cloudflare":
             env["OPENAI_API_KEY"] = api_key
             env["OPENAI_BASE_URL"] = self._cloudflare_openai_base()
+            model = self._settings.graphify_llm_model.strip()
+            if model:
+                env["GRAPHIFY_OPENAI_MODEL"] = model
+            return env
+        if backend == "lmstudio":
+            # LM Studio serves an OpenAI-compatible API; graphify has no native
+            # lmstudio backend so we ride its ``openai`` path via OPENAI_BASE_URL.
+            # LM Studio does not require a real API key — the OpenAI SDK needs a
+            # non-empty string to initialise.
+            env["OPENAI_API_KEY"] = api_key or "lm-studio"
+            env["OPENAI_BASE_URL"] = self._settings.lm_studio_base_url.strip()
             model = self._settings.graphify_llm_model.strip()
             if model:
                 env["GRAPHIFY_OPENAI_MODEL"] = model

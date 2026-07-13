@@ -51,6 +51,16 @@ from config.settings import Settings
                 "graphify_code_only": True,
             },
         ),
+        (
+            {
+                "GRAPHIFY_LLM_BACKEND": "lmstudio",
+                "GRAPHIFY_LLM_MODEL": "qwen2.5-coder-7b-instruct",
+            },
+            {
+                "graphify_llm_backend": "lmstudio",
+                "graphify_llm_model": "qwen2.5-coder-7b-instruct",
+            },
+        ),
     ],
 )
 def test_graphify_settings_parsing(

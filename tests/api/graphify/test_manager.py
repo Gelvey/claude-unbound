@@ -620,6 +620,77 @@ def test_manager_extract_env_cloudflare_honours_base_url_override(
     assert env["OPENAI_BASE_URL"] == "https://gateway.example.com/ai/v1"
 
 
+# ---------------------------------------------------------------------------
+# LM Studio extraction backend (OpenAI-compatible via lm_studio_base_url)
+# ---------------------------------------------------------------------------
+
+
+def test_manager_extract_env_lmstudio_redirects_openai_backend(
+    graphify_tmp_home: Path, graphify_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """lmstudio rides graphify's openai backend pointed at the LM Studio endpoint."""
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    manager = _build_manager(
+        graphify_settings,
+        graphify_llm_backend="lmstudio",
+        graphify_llm_api_key="",
+        lm_studio_base_url="http://localhost:1234/v1",
+        graphify_llm_model="qwen2.5-coder-7b-instruct",
+    )
+    env = manager._extract_env()
+    assert env["OPENAI_API_KEY"] == "lm-studio"
+    assert env["OPENAI_BASE_URL"] == "http://localhost:1234/v1"
+    assert env["GRAPHIFY_OPENAI_MODEL"] == "qwen2.5-coder-7b-instruct"
+
+
+def test_manager_extract_env_lmstudio_uses_provided_api_key(
+    graphify_tmp_home: Path, graphify_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An explicit GRAPHIFY_LLM_API_KEY is forwarded as OPENAI_API_KEY."""
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    manager = _build_manager(
+        graphify_settings,
+        graphify_llm_backend="lmstudio",
+        graphify_llm_api_key="real-key",
+        lm_studio_base_url="http://localhost:1234/v1",
+    )
+    env = manager._extract_env()
+    assert env["OPENAI_API_KEY"] == "real-key"
+
+
+def test_manager_extract_env_lmstudio_omits_model_when_blank(
+    graphify_tmp_home: Path, graphify_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GRAPHIFY_OPENAI_MODEL is only set when GRAPHIFY_LLM_MODEL is non-empty."""
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    manager = _build_manager(
+        graphify_settings,
+        graphify_llm_backend="lmstudio",
+        graphify_llm_api_key="",
+        lm_studio_base_url="http://localhost:1234/v1",
+        graphify_llm_model="",
+    )
+    env = manager._extract_env()
+    assert "GRAPHIFY_OPENAI_MODEL" not in env
+
+
+def test_build_extract_args_lmstudio_passes_openai_backend(
+    graphify_tmp_home: Path, graphify_settings: Any
+) -> None:
+    """lmstudio maps to --backend openai on the graphify CLI."""
+    manager = _build_manager(
+        graphify_settings,
+        graphify_llm_backend="lmstudio",
+        graphify_llm_model="qwen2.5-coder-7b-instruct",
+    )
+    project = _register_project(graphify_tmp_home)
+    args = manager._build_extract_args(project, "extract")
+    assert "--backend" in args
+    assert args[args.index("--backend") + 1] == "openai"
+    assert "--model" in args
+    assert args[args.index("--model") + 1] == "qwen2.5-coder-7b-instruct"
+
+
 @pytest.mark.parametrize(
     ("backend", "attr", "env_key"),
     [
