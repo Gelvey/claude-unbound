@@ -790,6 +790,8 @@ def test_build_extract_args_cloudflare_passes_openai_backend(
     assert args[args.index("--backend") + 1] == "openai"
     assert "--model" in args
     assert args[args.index("--model") + 1] == "@cf/meta/llama-3.3-70b"
+    assert "--token-budget" in args
+    assert args[args.index("--token-budget") + 1] == "20000"
 
 
 def test_build_extract_args_code_only_skips_backend(
@@ -863,6 +865,52 @@ async def test_manager_index_project_cloudflare_passes_backend_and_env(
     env = create_subprocess.call_args.kwargs["env"]
     assert env["OPENAI_API_KEY"] == "cf-key"
     assert "accounts/acct/ai/v1" in env["OPENAI_BASE_URL"]
+
+
+@pytest.mark.asyncio
+async def test_manager_index_project_cloudflare_retries_on_timeout(
+    graphify_tmp_home: Path, graphify_settings: Any
+) -> None:
+    """Timeout errors halve the token budget and retry."""
+    repo_path = graphify_tmp_home / "repo"
+    repo_path.mkdir()
+    project = _register_project(repo_path)
+    manager = _build_manager(
+        graphify_settings,
+        graphify_python_path="/fake/python",
+        graphify_llm_backend="cloudflare",
+        graphify_llm_model="@cf/meta/llama-3.3-70b",
+        cloudflare_ai_api_key="cf-key",
+        cloudflare_ai_account_id="acct",
+    )
+
+    timeout_process = _async_process_mock(returncode=1)
+    timeout_process.communicate = AsyncMock(
+        return_value=(b"", b"[graphify] chunk 1/1 failed: Request timed out.")
+    )
+    success_process = _async_process_mock(returncode=0)
+    success_process.communicate = AsyncMock(return_value=(b"extracted", b""))
+
+    with (
+        patch("api.graphify.manager._is_graphify_importable", return_value=True),
+        patch(
+            "api.graphify.manager.GraphifyManager._ensure_graphify_llm_extra",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "api.graphify.manager.asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
+            side_effect=[timeout_process, success_process],
+        ) as create_subprocess,
+    ):
+        result = await manager.index_project(project)
+
+    assert result["success"] is True
+    assert create_subprocess.call_count == 2
+    first_args = create_subprocess.call_args_list[0].args
+    second_args = create_subprocess.call_args_list[1].args
+    assert first_args[first_args.index("--token-budget") + 1] == "20000"
+    assert second_args[second_args.index("--token-budget") + 1] == "10000"
 
 
 @pytest.mark.asyncio
@@ -942,3 +990,40 @@ async def test_ensure_graphify_llm_extra_noop_without_backend(
     with patch("api.graphify.manager._is_module_importable") as is_module:
         await manager._ensure_graphify_llm_extra("/fake/python")
     is_module.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_auto_index_projects_requeues_orphaned_indexing(
+    graphify_tmp_home: Path, graphify_settings: Any
+) -> None:
+    """Projects stuck in ``indexing`` from a prior session are re-queued."""
+    repo_path = graphify_tmp_home / "repo"
+    repo_path.mkdir()
+    project = _register_project(repo_path)
+
+    # Simulate an interrupted index: the project was set to "indexing" but the
+    # server crashed / was restarted before the subprocess completed.
+    from api.graphify.projects import save_project_registry, update_project_status
+
+    registry = load_project_registry()
+    update_project_status(registry, project.path, status="indexing")
+    save_project_registry(registry)
+
+    manager = _build_manager(
+        graphify_settings,
+        graphify_python_path="/fake/python",
+    )
+
+    queued: list[str] = []
+
+    async def _fake_start_index(p: Any) -> dict[str, Any]:
+        queued.append(p.path)
+        return {"success": True, "status": "queued"}
+
+    with (
+        patch("api.graphify.manager._is_graphify_importable", return_value=True),
+        patch.object(manager, "start_index_project", _fake_start_index),
+    ):
+        await manager._auto_index_projects()
+
+    assert project.path in queued

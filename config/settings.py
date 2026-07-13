@@ -315,6 +315,16 @@ class Settings(BaseSettings):
         validation_alias="GRAPHIFY_AUTO_REINDEX",
         description="Poll registered projects and re-index when files change.",
     )
+    graphify_token_budget: int = Field(
+        default=60_000,
+        validation_alias="GRAPHIFY_TOKEN_BUDGET",
+        description=(
+            "Per-chunk token budget passed to graphify extract as --token-budget. "
+            "Smaller values reduce the chance of provider timeouts at the cost of "
+            "more LLM calls. Cloudflare defaults to 20k because its Workers AI "
+            "endpoint frequently times out on large chunks."
+        ),
+    )
 
     # ==================== Model ====================
     # All Claude model requests are mapped to this single model (fallback)

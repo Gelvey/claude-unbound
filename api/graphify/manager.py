@@ -109,6 +109,14 @@ _FCC_PROVIDER_PREFIXES: frozenset[str] = frozenset(
 )
 
 
+def _looks_like_timeout_error(text: str) -> bool:
+    """Return True if *text* looks like a provider request timeout."""
+    lowered = text.lower()
+    return any(
+        marker in lowered for marker in ("request timed out", "timed out", "timeout")
+    )
+
+
 def _strip_fcc_model_prefix(model: str) -> str:
     """Strip the FCC provider prefix from a model id.
 
@@ -489,31 +497,14 @@ class GraphifyManager:
         project_ref = update_project_status(registry, project.path, status="indexing")
         save_project_registry(registry)
 
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                python,
-                *self._build_extract_args(project, mode),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=self._extract_env(),
-            )
-            stdout, stderr = await proc.communicate()
-        except Exception as exc:
-            project_ref = update_project_status(
-                registry, project.path, status="error", error_message=str(exc)
-            )
-            save_project_registry(registry)
-            return {"success": False, "error": str(exc)}
+        result = await self._run_extract_with_timeout_retry(python, project, mode)
 
-        stderr_text = stderr.decode("utf-8", errors="replace").strip()
-        stdout_text = stdout.decode("utf-8", errors="replace").strip()
-        if proc.returncode != 0:
-            error = stderr_text or stdout_text or f"graphify {mode} failed"
+        if not result["success"]:
             project_ref = update_project_status(
-                registry, project.path, status="error", error_message=error
+                registry, project.path, status="error", error_message=result["error"]
             )
             save_project_registry(registry)
-            return {"success": False, "error": error}
+            return result
 
         project_ref.status = "ready"
         project_ref.error_message = ""
@@ -522,6 +513,82 @@ class GraphifyManager:
         return {
             "success": True,
             "mode": mode,
+            "stdout": result["stdout"],
+            "stderr": result["stderr"],
+        }
+
+    async def _run_extract_with_timeout_retry(
+        self,
+        python: str,
+        project: GraphifyProject,
+        mode: str,
+    ) -> dict[str, Any]:
+        """Run ``graphify extract``/``update``, bisecting chunks on timeout.
+
+        Cloudflare Workers AI frequently times out on large chunks. Rather than
+        failing the whole project, halve the token budget and retry until the
+        chunk is small enough to complete. Only timeout errors are retried;
+        other failures (missing key, import errors, etc.) surface immediately.
+        """
+        backend = self._settings.graphify_llm_backend.strip().lower()
+        token_budget = self._default_token_budget(backend)
+        min_budget = 4_096
+        last_error = ""
+
+        while token_budget >= min_budget:
+            result = await self._run_extract_subprocess(
+                python, project, mode, token_budget=token_budget
+            )
+            if result["success"]:
+                return result
+
+            last_error = result["error"]
+            if not _looks_like_timeout_error(last_error):
+                return result
+
+            logger.warning(
+                "GRAPHIFY_MANAGER: timeout for {} with token_budget={}; halving and retrying",
+                project.path,
+                token_budget,
+            )
+            token_budget //= 2
+
+        return {"success": False, "error": last_error}
+
+    async def _run_extract_subprocess(
+        self,
+        python: str,
+        project: GraphifyProject,
+        mode: str,
+        *,
+        token_budget: int,
+    ) -> dict[str, Any]:
+        """Run one ``graphify`` subprocess and return parsed result."""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                python,
+                *self._build_extract_args(project, mode, token_budget=token_budget),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=self._extract_env(),
+            )
+            stdout, stderr = await proc.communicate()
+        except Exception as exc:
+            return {"success": False, "error": str(exc), "stdout": "", "stderr": ""}
+
+        stderr_text = stderr.decode("utf-8", errors="replace").strip()
+        stdout_text = stdout.decode("utf-8", errors="replace").strip()
+        if proc.returncode != 0:
+            error = stderr_text or stdout_text or f"graphify {mode} failed"
+            return {
+                "success": False,
+                "error": error,
+                "stdout": stdout_text,
+                "stderr": stderr_text,
+            }
+
+        return {
+            "success": True,
             "stdout": stdout_text,
             "stderr": stderr_text,
         }
@@ -663,7 +730,10 @@ class GraphifyManager:
     async def _auto_index_projects(self) -> None:
         registry = load_project_registry()
         for project in registry.projects:
-            if project.status in {"missing", "stale", "error"}:
+            # Re-queue interrupted ``indexing`` projects: a server restart
+            # mid-index leaves them orphaned with no running subprocess, so
+            # they would never complete without a manual re-index.
+            if project.status in {"missing", "stale", "error", "indexing"}:
                 await self.start_index_project(project)
 
     async def _wait_for_ready(self, timeout: float = 15.0) -> bool:
@@ -766,7 +836,9 @@ class GraphifyManager:
             env[env_key] = api_key
         return env
 
-    def _build_extract_args(self, project: GraphifyProject, mode: str) -> list[str]:
+    def _build_extract_args(
+        self, project: GraphifyProject, mode: str, *, token_budget: int | None = None
+    ) -> list[str]:
         """Return the ``graphify <mode> <path>`` argv after the python interpreter.
 
         ``--backend``/``--model`` apply only to ``extract`` (``update`` is code-only
@@ -787,7 +859,21 @@ class GraphifyManager:
             model = self._settings.graphify_llm_model.strip()
             if model:
                 args.extend(["--model", _strip_fcc_model_prefix(model)])
+        if token_budget is None:
+            token_budget = self._default_token_budget(backend)
+        if token_budget > 0:
+            args.extend(["--token-budget", str(token_budget)])
         return args
+
+    def _default_token_budget(self, backend: str) -> int:
+        """Return the default --token-budget for ``backend``.
+
+        Cloudflare's Workers AI endpoint frequently times out on large chunks, so
+        we default to a much smaller chunk size than graphify's 60k default.
+        """
+        if backend == "cloudflare":
+            return 20_000
+        return self._settings.graphify_token_budget
 
     async def _ensure_graphify_llm_extra(self, python: str) -> None:
         """Install the LLM SDK the configured backend imports into the graphify venv.
