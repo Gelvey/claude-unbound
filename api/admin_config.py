@@ -473,6 +473,7 @@ FIELDS: tuple[ConfigFieldSpec, ...] = (
             "openai",
             "claude",
             "ollama",
+            "lmstudio",
             "azure",
         ),
         description=(
@@ -480,7 +481,8 @@ FIELDS: tuple[ConfigFieldSpec, ...] = (
             "community naming. 'cloudflare' reuses the Cloudflare Workers AI key/"
             "account-id from the Providers tab; gemini/deepseek/kimi likewise reuse "
             "their provider key when the API key field below is empty. 'ollama' is "
-            "fully local (no key). Leave empty with Code-Only on for no LLM."
+            "fully local (no key). 'lmstudio' uses the local LM Studio server "
+            "(no key, LM_STUDIO_BASE_URL). Leave empty with Code-Only on for no LLM."
         ),
     ),
     ConfigFieldSpec(
