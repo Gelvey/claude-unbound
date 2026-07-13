@@ -10,6 +10,7 @@ import signal
 import socket
 import subprocess
 import sys
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -194,8 +195,17 @@ class GraphifyManager:
         self._base_url: str | None = None
         self._python_path: str | None = None
         self._last_error: str | None = None
-        self._indexing_tasks: dict[str, asyncio.Task[dict[str, Any]]] = {}
         self._watcher: Any | None = None
+
+        # --- Single-index queue (one project indexes at a time) ---
+        self._index_queue: deque[
+            tuple[GraphifyProject, asyncio.Future[dict[str, Any]]]
+        ] = deque()
+        self._index_queue_paths: set[str] = set()
+        self._index_current: str | None = None
+        self._index_current_future: asyncio.Future[dict[str, Any]] | None = None
+        self._index_event = asyncio.Event()
+        self._index_worker_task: asyncio.Task[None] | None = None
 
     @property
     def port(self) -> int | None:
@@ -324,6 +334,7 @@ class GraphifyManager:
             port,
             python,
         )
+        self._start_index_worker()
         self._start_watcher()
         if self._settings.graphify_auto_index_on_start:
             await self._auto_index_projects()
@@ -332,6 +343,7 @@ class GraphifyManager:
     async def stop(self) -> None:
         """Stop Graphify and remove its MCP backend."""
         await self._stop_watcher()
+        await self._drain_index_queue()
         process = self._process
         self._process = None
         if process and process.returncode is None:
@@ -415,6 +427,9 @@ class GraphifyManager:
                 }
                 for p in registry.projects
             ],
+            "index_queue": self.index_queue_snapshot,
+            "index_queue_length": len(self._index_queue)
+            + (1 if self._index_current else 0),
         }
 
     async def index_project(self, project: GraphifyProject) -> dict[str, Any]:
@@ -502,52 +517,144 @@ class GraphifyManager:
         }
 
     async def start_index_project(self, project: GraphifyProject) -> dict[str, Any]:
-        """Start indexing *project* in the background.
+        """Enqueue *project* for sequential background indexing.
 
-        Returns immediately with the task status so the admin UI can poll
-        progress instead of blocking on a long-running ``graphify extract``.
+        Only one project indexes at a time.  If another project is already
+        indexing, *project* is queued and will start automatically when the
+        current one finishes.
         """
-        existing = self._indexing_tasks.get(project.path)
-        if existing is not None and not existing.done():
+        if self._index_current == project.path:
             return {
                 "success": True,
                 "status": "already_running",
                 "path": project.path,
             }
-        task = asyncio.create_task(self._run_index_project(project))
-        self._indexing_tasks[project.path] = task
-        return {"success": True, "status": "started", "path": project.path}
 
-    async def _run_index_project(self, project: GraphifyProject) -> dict[str, Any]:
-        try:
-            return await self.index_project(project)
-        finally:
-            self._indexing_tasks.pop(project.path, None)
+        if project.path in self._index_queue_paths:
+            return {
+                "success": True,
+                "status": "already_queued",
+                "path": project.path,
+            }
+
+        future: asyncio.Future[dict[str, Any]] = (
+            asyncio.get_running_loop().create_future()
+        )
+        self._index_queue.append((project, future))
+        self._index_queue_paths.add(project.path)
+
+        registry = load_project_registry()
+        update_project_status(registry, project.path, status="queued")
+        save_project_registry(registry)
+
+        self._index_event.set()
+        return {"success": True, "status": "queued", "path": project.path}
 
     def get_index_task_status(self, path: str) -> dict[str, Any] | None:
-        """Return in-progress status for a background indexing task."""
-        task = self._indexing_tasks.get(path)
-        if task is None:
-            return None
-        if task.done():
+        """Return in-progress or queued status for a background indexing task."""
+        if self._index_current == path:
+            return {"path": path, "status": "indexing"}
+
+        for queued_project, future in self._index_queue:
+            if queued_project.path == path:
+                if future.done():
+                    try:
+                        result = future.result()
+                    except Exception as exc:
+                        return {
+                            "path": path,
+                            "status": "error",
+                            "error_message": str(exc),
+                        }
+                    status = "ready" if result.get("success") else "error"
+                    return {
+                        "path": path,
+                        "status": status,
+                        "result": result,
+                        "error_message": result.get("error", ""),
+                    }
+                return {"path": path, "status": "queued"}
+
+        return None
+
+    @property
+    def index_queue_snapshot(self) -> list[dict[str, Any]]:
+        """Return an ordered snapshot of the indexing queue for the API."""
+        items: list[dict[str, Any]] = []
+        if self._index_current:
+            items.append({"path": self._index_current, "status": "indexing"})
+        for project, future in self._index_queue:
+            if future.done():
+                try:
+                    future.result()
+                    status = "ready"
+                except Exception:
+                    status = "error"
+            else:
+                status = "queued"
+            items.append({"path": project.path, "status": status})
+        return items
+
+    def _start_index_worker(self) -> None:
+        """Launch the single-item index worker coroutine."""
+        if self._index_worker_task is not None and not self._index_worker_task.done():
+            return
+        self._index_worker_task = asyncio.create_task(self._run_index_worker())
+
+    async def _run_index_worker(self) -> None:
+        """Process one project at a time from the queue."""
+        while True:
+            self._index_event.clear()
+            if not self._index_queue:
+                await self._index_event.wait()
+                continue
+
+            project, future = self._index_queue.popleft()
+            self._index_queue_paths.discard(project.path)
+            self._index_current = project.path
+            self._index_current_future = future
+
             try:
-                result = task.result()
+                result = await self.index_project(project)
+                if not future.done():
+                    future.set_result(result)
             except Exception as exc:
-                return {"path": path, "status": "error", "error_message": str(exc)}
-            status = "ready" if result.get("success") else "error"
-            return {
-                "path": path,
-                "status": status,
-                "result": result,
-                "error_message": result.get("error", ""),
-            }
-        return {"path": path, "status": "indexing"}
+                if not future.done():
+                    future.set_exception(exc)
+            finally:
+                self._index_current = None
+                self._index_current_future = None
+
+    async def _drain_index_queue(self) -> None:
+        """Cancel all queued and in-flight index work, then stop the worker."""
+        if self._index_worker_task is not None and not self._index_worker_task.done():
+            self._index_worker_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._index_worker_task
+            self._index_worker_task = None
+
+        # Resolve the in-flight future if the worker was cancelled mid-index.
+        if (
+            self._index_current_future is not None
+            and not self._index_current_future.done()
+        ):
+            self._index_current_future.set_exception(
+                asyncio.CancelledError("Graphify stopped")
+            )
+        self._index_current_future = None
+
+        while self._index_queue:
+            _project, future = self._index_queue.popleft()
+            if not future.done():
+                future.set_exception(asyncio.CancelledError("Graphify stopped"))
+        self._index_queue_paths.clear()
+        self._index_current = None
 
     async def _auto_index_projects(self) -> None:
         registry = load_project_registry()
         for project in registry.projects:
             if project.status in {"missing", "stale", "error"}:
-                await self.index_project(project)
+                await self.start_index_project(project)
 
     async def _wait_for_ready(self, timeout: float = 15.0) -> bool:
         if not self._base_url:

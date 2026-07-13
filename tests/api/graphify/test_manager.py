@@ -407,30 +407,32 @@ async def test_manager_start_index_project_runs_in_background(
             return_value=success_process,
         ),
     ):
+        # Start the background worker so the queued project gets processed.
+        manager._start_index_worker()
         start_result = await manager.start_index_project(project)
         assert start_result["success"] is True
-        assert start_result["status"] == "started"
+        assert start_result["status"] == "queued"
 
         # The task status should be visible immediately
         task_status = manager.get_index_task_status(project.path)
         assert task_status is not None
-        assert task_status["status"] == "indexing"
+        assert task_status["status"] in {"indexing", "queued"}
 
-        # Wait for the background task to complete; the task entry is removed
-        # once it finishes, so also poll the persisted project status.
+        # Wait for the background task to complete; the queue snapshot is
+        # empty once the worker finishes and clears _index_current.
         for _ in range(200):
             await asyncio.sleep(0.01)
-            if not manager._indexing_tasks:
+            if not manager.index_queue_snapshot:
                 break
 
-        assert not manager._indexing_tasks
+        assert not manager.index_queue_snapshot
         status = load_project_registry().projects[0]
         assert status.status == "ready"
         assert status.last_indexed is not None
 
 
 @pytest.mark.asyncio
-async def test_manager_start_index_project_returns_already_running(
+async def test_manager_start_index_project_returns_already_queued(
     graphify_tmp_home: Path, graphify_settings: Any
 ) -> None:
     repo_path = graphify_tmp_home / "repo"
@@ -441,26 +443,15 @@ async def test_manager_start_index_project_returns_already_running(
         graphify_settings,
         graphify_python_path="/fake/python",
     )
-    slow_process = _async_process_mock(returncode=None)
 
-    async def _slow_communicate():
-        await asyncio.sleep(0.3)
-        return (b"", b"")
-
-    slow_process.communicate = AsyncMock(side_effect=_slow_communicate)
-
-    with (
-        patch("api.graphify.manager._is_graphify_importable", return_value=True),
-        patch(
-            "api.graphify.manager.asyncio.create_subprocess_exec",
-            new_callable=AsyncMock,
-            return_value=slow_process,
-        ),
-    ):
+    with patch("api.graphify.manager._is_graphify_importable", return_value=True):
         first = await manager.start_index_project(project)
-        assert first["status"] == "started"
+        assert first["status"] == "queued"
         second = await manager.start_index_project(project)
-        assert second["status"] == "already_running"
+        assert second["status"] == "already_queued"
+
+    # Clean up the queued futures to avoid unawaited-future warnings.
+    await manager._drain_index_queue()
 
 
 # ---------------------------------------------------------------------------

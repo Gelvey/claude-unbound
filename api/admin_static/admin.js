@@ -2218,7 +2218,9 @@ function stopGraphifyAutoRefresh() {
 }
 
 function startGraphifyAutoRefreshIfBusy() {
-  const busy = graphifyState.projects.some((p) => p.status === "indexing");
+  const busy = graphifyState.projects.some(
+    (p) => p.status === "indexing" || p.status === "queued",
+  );
   if (!busy) {
     stopGraphifyAutoRefresh();
     return;
@@ -2240,7 +2242,7 @@ function startGraphifyAutoRefreshIfBusy() {
     } catch {
       // Swallow transient polling errors; the next tick retries.
     }
-  }, 2000);
+  }, 10000);
 }
 
 async function loadGraphifyView() {
@@ -2280,12 +2282,14 @@ async function loadGraphifyView() {
 function graphifyStatusPillClass(status) {
   if (status === "ready") return "ok";
   if (status === "indexing") return "warn";
+  if (status === "queued") return "warn";
   if (status === "error") return "error";
   if (status === "stale") return "warn";
   return "neutral";
 }
 
 function graphifyStatusLabel(status) {
+  if (status === "queued") return "queued";
   return status || "missing";
 }
 
@@ -2463,6 +2467,28 @@ function renderGraphifyView(status, projects, health) {
   addRow.append(pathInput, addBtn);
   projectSection.appendChild(addRow);
 
+  // Queue banner: show when multiple items are in the index queue.
+  const queueLength = status.index_queue_length ?? 0;
+  if (queueLength > 0) {
+    const queueBanner = document.createElement("div");
+    queueBanner.className = "mcp-status-banner";
+    const queueItems = status.index_queue || [];
+    const current = queueItems.find((item) => item.status === "indexing");
+    const queuedCount = queueLength - (current ? 1 : 0);
+    const currentName = current
+      ? (projects.find((p) => p.path === current.path)?.name || current.path)
+      : "";
+    let bannerText = '<span class="status-pill warn">Indexing</span> ';
+    if (currentName) {
+      bannerText += `<strong>${currentName}</strong> is indexing`;
+    }
+    if (queuedCount > 0) {
+      bannerText += ` · ${queuedCount} project${queuedCount === 1 ? "" : "s"} queued`;
+    }
+    queueBanner.innerHTML = bannerText;
+    projectSection.appendChild(queueBanner);
+  }
+
   const grid = document.createElement("div");
   grid.className = "field-grid";
   projects.forEach((project) => {
@@ -2479,6 +2505,10 @@ function renderGraphifyView(status, projects, health) {
       const spinner = document.createElement("span");
       spinner.textContent = " ⟳";
       pill.appendChild(spinner);
+    } else if (project.status === "queued") {
+      const queueTag = document.createElement("span");
+      queueTag.textContent = " ⏳";
+      pill.appendChild(queueTag);
     }
     title.appendChild(pill);
 
@@ -2527,11 +2557,17 @@ function renderGraphifyView(status, projects, health) {
           method: "POST",
           body: "{}",
         });
-        if (!result.success || result.status === "already_running") {
+        if (
+          !result.success ||
+          result.status === "already_running" ||
+          result.status === "already_queued"
+        ) {
           showMessage(
             result.status === "already_running"
               ? "Indexing is already running"
-              : result.error || "Index failed",
+              : result.status === "already_queued"
+                ? "Project is already queued for indexing"
+                : result.error || "Index failed",
             result.success ? "ok" : "error",
           );
         }
@@ -2543,6 +2579,11 @@ function renderGraphifyView(status, projects, health) {
             if (!task) return;
             if (task.status === "indexing") {
               setIndexingLabel();
+              return;
+            }
+            if (task.status === "queued") {
+              const pos = task.queue_position || "?";
+              indexBtn.textContent = `Queued (${pos})`;
               return;
             }
             clearInterval(pollInterval);

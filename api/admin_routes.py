@@ -1002,6 +1002,13 @@ async def graphify_index_project_status(path_b64: str, request: Request):
     }
     if task_status is not None:
         result["task"] = task_status
+    # Include queue position so the UI can show "Queued (2 of 5)".
+    if project.status == "queued":
+        for i, item in enumerate(manager.index_queue_snapshot):
+            if item["path"] == path:
+                result["queue_position"] = i + 1
+                break
+    result["current_indexing"] = manager._index_current
     return result
 
 

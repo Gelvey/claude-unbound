@@ -15,7 +15,9 @@ class GraphifyProject(BaseModel):
     name: str
     graphify_out: str = "graphify-out"
     last_indexed: datetime | None = None
-    status: Literal["missing", "indexing", "ready", "stale", "error"] = "missing"
+    status: Literal["missing", "indexing", "ready", "stale", "error", "queued"] = (
+        "missing"
+    )
     error_message: str = ""
 
 
