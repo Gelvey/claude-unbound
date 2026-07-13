@@ -844,8 +844,7 @@ def _get_graphify_manager(request: Request) -> GraphifyManager:
     """Return the shared GraphifyManager singleton (stored on app.state)."""
     manager = getattr(request.app.state, "graphify_manager", None)
     if manager is None:
-        settings = get_cached_settings()
-        manager = GraphifyManager(settings)
+        manager = GraphifyManager()
         request.app.state.graphify_manager = manager
     return manager
 

@@ -415,7 +415,7 @@ class AppRuntime:
     async def _start_graphify_if_enabled(self) -> None:
         if not getattr(self.settings, "graphify_enabled", False):
             return
-        self.graphify_manager = GraphifyManager(self.settings)
+        self.graphify_manager = GraphifyManager()
         self.app.state.graphify_manager = self.graphify_manager
         # Re-publish in case graphify startup ran in the background.
         self._publish_state()

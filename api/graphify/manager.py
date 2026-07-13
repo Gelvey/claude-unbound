@@ -18,7 +18,7 @@ from typing import Any
 import httpx
 from loguru import logger
 
-from config.settings import Settings
+from config.settings import Settings, get_settings
 
 from .claude_mcp import (
     graphify_claude_server_registered,
@@ -188,8 +188,7 @@ class GraphifyManager:
            restart the router.
     """
 
-    def __init__(self, settings: Settings) -> None:
-        self._settings = settings
+    def __init__(self) -> None:
         self._process: asyncio.subprocess.Process | None = None
         self._port: int | None = None
         self._base_url: str | None = None
@@ -206,6 +205,17 @@ class GraphifyManager:
         self._index_current_future: asyncio.Future[dict[str, Any]] | None = None
         self._index_event = asyncio.Event()
         self._index_worker_task: asyncio.Task[None] | None = None
+
+    @property
+    def _settings(self) -> Settings:
+        """Always return the current settings.
+
+        The admin UI writes new values to the managed ``.env`` file and
+        clears the :func:`get_settings` LRU cache.  By reading from the
+        cache on every access the manager picks up changed LLM backend,
+        model, and API-key values without requiring an fcc-server restart.
+        """
+        return get_settings()
 
     @property
     def port(self) -> int | None:

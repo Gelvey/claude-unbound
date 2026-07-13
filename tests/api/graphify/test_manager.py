@@ -39,10 +39,17 @@ def _mcp_ok_response() -> Any:
 
 
 def _build_manager(graphify_settings: Any, **overrides: Any) -> GraphifyManager:
+    from unittest.mock import patch
+
     from config.settings import Settings
 
     fields = {**graphify_settings.model_dump(), **overrides}
-    return GraphifyManager(Settings.model_construct(**fields))
+    custom = Settings.model_construct(**fields)
+    # Patch get_settings so the manager's _settings property returns the
+    # custom test settings instead of reading from the real env/cache.
+    patcher = patch("api.graphify.manager.get_settings", return_value=custom)
+    patcher.start()
+    return GraphifyManager()
 
 
 def _register_project(path: Path, name: str = "repo") -> GraphifyProject:
