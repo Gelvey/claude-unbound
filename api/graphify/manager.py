@@ -83,6 +83,49 @@ _GRAPHIFY_LLM_EXTRAS: dict[str, str] = {
 }
 _GRAPHIFY_OPENAI_EXTRA = "openai"
 
+
+_FCC_PROVIDER_PREFIXES: frozenset[str] = frozenset(
+    {
+        "cloudflare_ai",
+        "lmstudio",
+        "llamacpp",
+        "ollama",
+        "open_router",
+        "nvidia_nim",
+        "gemini",
+        "deepseek",
+        "mistral",
+        "mistral_codestral",
+        "kimi",
+        "groq",
+        "cerebras",
+        "fireworks",
+        "opencode",
+        "opencode_go",
+        "wafer",
+        "zai",
+    }
+)
+
+
+def _strip_fcc_model_prefix(model: str) -> str:
+    """Strip the FCC provider prefix from a model id.
+
+    FCC's Model Config stores models as ``provider/model_id`` (e.g.
+    ``cloudflare_ai/@cf/moonshotai/kimi-k2.7-code``).  Graphify expects the
+    bare provider-native id (``@cf/moonshotai/kimi-k2.7-code``).  The prefix
+    is always the first ``/``-delimited segment when it matches a known FCC
+    provider id — model ids themselves can contain ``/`` (e.g.
+    ``@cf/meta/llama-3.3-70b-instruct-fp8-fast``), so we only strip when the
+    first segment is a recognised provider prefix.
+    """
+    if "/" in model:
+        prefix = model.split("/", 1)[0]
+        if prefix in _FCC_PROVIDER_PREFIXES:
+            return model[len(prefix) + 1 :]
+    return model
+
+
 # MCP ``initialize`` request body used by the readiness/health probes. Graphify
 # serves a Streamable HTTP endpoint at /mcp that rejects plain GET with 406
 # ("Client must accept text/event-stream"); a POSTed initialize with the SSE
@@ -588,7 +631,7 @@ class GraphifyManager:
             env["OPENAI_BASE_URL"] = self._cloudflare_openai_base()
             model = self._settings.graphify_llm_model.strip()
             if model:
-                env["GRAPHIFY_OPENAI_MODEL"] = model
+                env["GRAPHIFY_OPENAI_MODEL"] = _strip_fcc_model_prefix(model)
             return env
         if backend == "lmstudio":
             # LM Studio serves an OpenAI-compatible API; graphify has no native
@@ -599,7 +642,7 @@ class GraphifyManager:
             env["OPENAI_BASE_URL"] = self._settings.lm_studio_base_url.strip()
             model = self._settings.graphify_llm_model.strip()
             if model:
-                env["GRAPHIFY_OPENAI_MODEL"] = model
+                env["GRAPHIFY_OPENAI_MODEL"] = _strip_fcc_model_prefix(model)
             return env
         env_key = _GRAPHIFY_LLM_ENV_KEYS.get(backend)
         if env_key and api_key:
@@ -626,7 +669,7 @@ class GraphifyManager:
             args.extend(["--backend", _GRAPHIFY_BACKEND_ALIAS.get(backend, backend)])
             model = self._settings.graphify_llm_model.strip()
             if model:
-                args.extend(["--model", model])
+                args.extend(["--model", _strip_fcc_model_prefix(model)])
         return args
 
     async def _ensure_graphify_llm_extra(self, python: str) -> None:

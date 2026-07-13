@@ -687,8 +687,68 @@ def test_build_extract_args_lmstudio_passes_openai_backend(
     args = manager._build_extract_args(project, "extract")
     assert "--backend" in args
     assert args[args.index("--backend") + 1] == "openai"
+
+
+# ---------------------------------------------------------------------------
+# FCC provider-prefix stripping
+# ---------------------------------------------------------------------------
+
+
+def test_manager_extract_env_cloudflare_strips_fcc_prefix(
+    graphify_tmp_home: Path, graphify_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FCC-format model id 'cloudflare_ai/@cf/moonshotai/kimi-k2.7-code' is
+    stripped to bare '@cf/moonshotai/kimi-k2.7-code' before reaching graphify."""
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    manager = _build_manager(
+        graphify_settings,
+        graphify_llm_backend="cloudflare",
+        graphify_llm_api_key="cf-key",
+        cloudflare_ai_account_id="acct123",
+        graphify_llm_model="cloudflare_ai/@cf/moonshotai/kimi-k2.7-code",
+    )
+    env = manager._extract_env()
+    assert env["GRAPHIFY_OPENAI_MODEL"] == "@cf/moonshotai/kimi-k2.7-code"
+
+
+def test_manager_extract_env_lmstudio_strips_fcc_prefix(
+    graphify_tmp_home: Path, graphify_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FCC-format model id 'lmstudio/qwen2.5-coder-7b-instruct' is stripped."""
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    manager = _build_manager(
+        graphify_settings,
+        graphify_llm_backend="lmstudio",
+        graphify_llm_api_key="",
+        lm_studio_base_url="http://localhost:1234/v1",
+        graphify_llm_model="lmstudio/qwen2.5-coder-7b-instruct",
+    )
+    env = manager._extract_env()
+    assert env["GRAPHIFY_OPENAI_MODEL"] == "qwen2.5-coder-7b-instruct"
+
+
+def test_build_extract_args_strips_fcc_prefix(
+    graphify_tmp_home: Path, graphify_settings: Any
+) -> None:
+    """--model gets the bare model id without FCC provider prefix."""
+    manager = _build_manager(
+        graphify_settings,
+        graphify_llm_backend="cloudflare",
+        graphify_llm_model="cloudflare_ai/@cf/moonshotai/kimi-k2.7-code",
+    )
+    project = _register_project(graphify_tmp_home)
+    args = manager._build_extract_args(project, "extract")
     assert "--model" in args
-    assert args[args.index("--model") + 1] == "qwen2.5-coder-7b-instruct"
+    assert args[args.index("--model") + 1] == "@cf/moonshotai/kimi-k2.7-code"
+
+
+def test_strip_fcc_model_prefix_bare_model_unchanged() -> None:
+    from api.graphify.manager import _strip_fcc_model_prefix
+
+    assert (
+        _strip_fcc_model_prefix("@cf/meta/llama-3.3-70b-instruct-fp8-fast")
+        == "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+    )
 
 
 @pytest.mark.parametrize(
