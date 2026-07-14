@@ -15,10 +15,11 @@
       "port": 7101
     },
     "composio": {
+      "_comment": "Composio hosted MCP (Streamable HTTP). NOTE: configuring a toolkit/auth-config in Composio is not enough — you must create an MCP server against the auth_config_id via POST https://backend.composio.dev/api/v3.1/mcp/servers (header x-api-key) to get a server_id. Do NOT use https://connect.composio.dev/mcp (AuthKit/JWT-gated, 401s API keys) and do NOT use https://mcp.composio.dev (redirects to docs). The router's httpx client does not follow redirects, so use the canonical path with the /mcp suffix and ?user_id=. Auth header is x-api-key (NOT x-consumer-api-key).",
       "type": "http",
-      "url": "https://connect.composio.dev/mcp",
+      "url": "https://backend.composio.dev/v3/mcp/YOUR_SERVER_ID/mcp?user_id=YOUR_USER_ID",
       "headers": {
-        "x-consumer-api-key": "YOUR_COMPOSIO_API_KEY"
+        "x-api-key": "YOUR_COMPOSIO_API_KEY"
       },
       "port": 7110
     }
