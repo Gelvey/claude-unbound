@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import signal
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -87,6 +88,11 @@ async def test_manager_start_stop_registers_and_unregisters_claude_server(
         patch("api.graphify.manager._is_graphify_importable", return_value=True),
         patch("api.graphify.manager._find_free_port", return_value=9876),
         patch(
+            "api.graphify.manager._probe_graphify_port",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+        patch(
             "api.graphify.manager.asyncio.create_subprocess_exec",
             new_callable=AsyncMock,
             return_value=process,
@@ -102,6 +108,7 @@ async def test_manager_start_stop_registers_and_unregisters_claude_server(
         assert started is True
         assert manager.is_running
         assert manager.port == 9876
+        assert manager.status()["owns_process"] is True
         create_subprocess.assert_called_once()
         # GRAPHIFY_STATELESS defaults to True, so --stateless must be in argv.
         argv = create_subprocess.call_args.args
@@ -161,6 +168,11 @@ async def test_manager_start_passes_stateless_flag_by_default(
         patch("api.graphify.manager._is_graphify_importable", return_value=True),
         patch("api.graphify.manager._find_free_port", return_value=9876),
         patch(
+            "api.graphify.manager._probe_graphify_port",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+        patch(
             "api.graphify.manager.asyncio.create_subprocess_exec",
             new=AsyncMock(side_effect=_capture),
         ),
@@ -198,6 +210,11 @@ async def test_manager_start_omits_stateless_flag_when_disabled(
         patch("api.graphify.manager._is_graphify_importable", return_value=True),
         patch("api.graphify.manager._find_free_port", return_value=9876),
         patch(
+            "api.graphify.manager._probe_graphify_port",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+        patch(
             "api.graphify.manager.asyncio.create_subprocess_exec",
             new=AsyncMock(side_effect=_capture),
         ),
@@ -225,6 +242,11 @@ async def test_manager_start_does_not_register_when_not_ready(
         patch("api.graphify.manager._is_graphify_importable", return_value=True),
         patch("api.graphify.manager._find_free_port", return_value=9876),
         patch(
+            "api.graphify.manager._probe_graphify_port",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+        patch(
             "api.graphify.manager.asyncio.create_subprocess_exec",
             new_callable=AsyncMock,
             return_value=process,
@@ -243,6 +265,102 @@ async def test_manager_start_does_not_register_when_not_ready(
     assert started is False
     assert manager.last_error == "Graphify health check timed out"
     register_server.assert_not_called()
+    # The half-spawned process must be reaped, not leaked: ownership is claimed
+    # immediately after spawn so the readiness-failure stop() actually SIGTERMs.
+    process.send_signal.assert_called_once_with(signal.SIGTERM)
+
+
+@pytest.mark.asyncio
+async def test_manager_start_does_not_leak_process_when_not_ready(
+    graphify_tmp_home: Path, graphify_settings: Any
+) -> None:
+    """Readiness failure after a successful spawn must not leak the process."""
+    manager = _build_manager(graphify_settings, graphify_python_path="/fake/python")
+    process = _async_process_mock(returncode=None)
+
+    with (
+        patch("api.graphify.manager._is_graphify_importable", return_value=True),
+        patch("api.graphify.manager._find_free_port", return_value=9876),
+        patch(
+            "api.graphify.manager._probe_graphify_port",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+        patch(
+            "api.graphify.manager.asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
+            return_value=process,
+        ),
+        patch(
+            "api.graphify.manager.GraphifyManager._wait_for_ready",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+        patch("api.graphify.manager.register_graphify_claude_server"),
+        patch("api.graphify.manager.unregister_graphify_claude_server"),
+    ):
+        started = await manager.start()
+
+    assert started is False
+    process.send_signal.assert_called_once_with(signal.SIGTERM)
+    assert manager.is_running is False
+
+
+@pytest.mark.asyncio
+async def test_manager_start_adopts_existing_server_without_ownership(
+    graphify_tmp_home: Path, graphify_settings: Any
+) -> None:
+    """A healthy graphify already on the target port is adopted, not respawned.
+
+    The adoption path is what lets a restarted (or transient sibling) fcc-server
+    instance attach to the long-lived instance's graphify instead of spawning a
+    duplicate. The adopter does NOT own the process, so its stop() must not kill
+    it and must not remove the ~/.claude.json entry — otherwise a short-lived
+    sibling instance would unregister graphify out from under the owner.
+    """
+    manager = _build_manager(
+        graphify_settings,
+        graphify_python_path="/fake/python",
+        graphify_server_port=9876,
+    )
+
+    with (
+        patch("api.graphify.manager._is_graphify_importable", return_value=True),
+        patch(
+            "api.graphify.manager._probe_graphify_port",
+            new_callable=AsyncMock,
+            return_value=True,
+        ) as probe,
+        patch(
+            "api.graphify.manager.asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
+        ) as create_subprocess,
+        patch(
+            "api.graphify.manager.register_graphify_claude_server"
+        ) as register_server,
+        patch(
+            "api.graphify.manager.unregister_graphify_claude_server"
+        ) as unregister_server,
+    ):
+        started = await manager.start()
+
+        assert started is True
+        assert manager.is_running is True
+        assert manager.port == 9876
+        assert manager.status()["owns_process"] is False
+        assert manager.status()["adopted"] is True
+        # Adopted: never spawned a process, and re-registered the entry.
+        create_subprocess.assert_not_called()
+        probe.assert_awaited_once_with(9876, "secret-key")
+        register_server.assert_called_once_with(9876, "secret-key")
+
+        await manager.stop()
+
+        # Not the owner: stop() must leave the process and the entry alone.
+        create_subprocess.assert_not_called()
+        unregister_server.assert_not_called()
+        assert manager.is_running is False
+        assert manager.status()["owns_process"] is False
 
 
 @pytest.mark.asyncio
@@ -255,6 +373,11 @@ async def test_manager_health_checks_running_server(
     with (
         patch("api.graphify.manager._is_graphify_importable", return_value=True),
         patch("api.graphify.manager._find_free_port", return_value=9876),
+        patch(
+            "api.graphify.manager._probe_graphify_port",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
         patch(
             "api.graphify.manager.asyncio.create_subprocess_exec",
             new_callable=AsyncMock,

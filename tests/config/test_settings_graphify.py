@@ -12,7 +12,7 @@ from config.settings import Settings
 @pytest.mark.parametrize(
     "env_vars, expected",
     [
-        ({}, {"graphify_enabled": False, "graphify_server_port": 0}),
+        ({}, {"graphify_enabled": False, "graphify_server_port": 7120}),
         (
             {"GRAPHIFY_ENABLED": "true", "GRAPHIFY_SERVER_PORT": "8765"},
             {"graphify_enabled": True, "graphify_server_port": 8765},

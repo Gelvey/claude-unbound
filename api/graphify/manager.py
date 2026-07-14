@@ -183,6 +183,33 @@ def _extract_jsonrpc_error(data: dict[str, Any] | None) -> str | None:
     return None
 
 
+async def _probe_graphify_port(port: int, api_key: str = "") -> bool:
+    """Return True if a healthy Graphify MCP server answers on ``port``.
+
+    Used by :meth:`GraphifyManager.start` to detect a server already running on
+    the target port (a survivor of a forcefully-killed prior fcc-server, or one
+    owned by a concurrent instance) so the manager can adopt it instead of
+    spawning a duplicate. Mirrors the readiness/health probe: a POSTed MCP
+    ``initialize`` carrying the SSE ``Accept`` header, returning 200 on health.
+    """
+    headers = {
+        "Accept": "application/json, text/event-stream",
+        "Content-Type": "application/json",
+    }
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            resp = await client.post(
+                f"http://127.0.0.1:{port}/mcp",
+                json=_MCP_INITIALIZE_BODY,
+                headers=headers,
+            )
+    except httpx.HTTPError:
+        return False
+    return resp.status_code == 200
+
+
 class GraphifyManager:
     """Manage a local Graphify HTTP MCP server and project registry.
 
@@ -203,6 +230,14 @@ class GraphifyManager:
         self._python_path: str | None = None
         self._last_error: str | None = None
         self._watcher: Any | None = None
+        # True only when *this* manager spawned the running graphify process.
+        # An adopted server (already running on the target port, owned by a
+        # concurrent or prior fcc-server instance) is not ours to kill, and a
+        # later stop() must NOT remove the ~/.claude.json entry for it — that is
+        # what lets a short-lived sibling fcc-server instance shut down without
+        # tearing down graphify a long-lived instance depends on.
+        self._owns_process: bool = False
+        self._adopted: bool = False
 
         # --- Single-index queue (one project indexes at a time) ---
         self._index_queue: deque[
@@ -239,7 +274,9 @@ class GraphifyManager:
 
     @property
     def is_running(self) -> bool:
-        return self._process is not None and self._process.returncode is None
+        if self._process is not None and self._process.returncode is None:
+            return True
+        return self._adopted
 
     def _resolve_python(self) -> str:
         """Return the Python interpreter that should run graphify commands."""
@@ -295,6 +332,31 @@ class GraphifyManager:
 
         python = setup_result["python"]
         port = self._settings.graphify_server_port or _find_free_port()
+
+        # Adoption: if a Graphify server is already healthy on the target port,
+        # attach to it rather than spawning a duplicate. The server may be left
+        # over from a forcefully-killed prior fcc-server (which could not run
+        # its stop()), or owned by a concurrent fcc-server instance. The fixed
+        # GRAPHIFY_SERVER_PORT makes the target port stable across restarts so
+        # adoption is reliable. An adopted server is NOT ours to kill, and a
+        # later stop() will not unregister it — so a short-lived sibling
+        # fcc-server instance (e.g. a transient restart) cannot tear down the
+        # graphify a long-lived instance depends on.
+        if await _probe_graphify_port(port, self._settings.graphify_api_key):
+            self._port = port
+            self._base_url = f"http://127.0.0.1:{port}"
+            self._python_path = python
+            self._adopted = True
+            self._owns_process = False
+            register_graphify_claude_server(port, self._settings.graphify_api_key)
+            self._last_error = None
+            logger.info("GRAPHIFY_MANAGER: adopted existing graphify on port {}", port)
+            self._start_index_worker()
+            self._start_watcher()
+            if self._settings.graphify_auto_index_on_start:
+                await self._auto_index_projects()
+            return True
+
         self._port = port
         self._base_url = f"http://127.0.0.1:{port}"
 
@@ -334,6 +396,11 @@ class GraphifyManager:
         except Exception as exc:
             self._last_error = str(exc)
             return False
+        # We spawned it, so we own it — claim ownership immediately so the
+        # readiness-failure cleanup `stop()` below actually kills the
+        # half-spawned process instead of leaking it.
+        self._owns_process = True
+        self._adopted = False
 
         if not await self._wait_for_ready():
             self._last_error = "Graphify health check timed out"
@@ -359,12 +426,22 @@ class GraphifyManager:
         return True
 
     async def stop(self) -> None:
-        """Stop Graphify and remove its MCP backend."""
+        """Stop Graphify and remove its MCP backend if this manager owns it.
+
+        An adopted server (one we found already running on the target port,
+        owned by another instance) is left untouched: we do not kill the
+        process and we do not remove the ``~/.claude.json`` entry. This is the
+        guard that keeps a short-lived sibling fcc-server instance from
+        unregistering graphify that a long-lived instance registered.
+        """
         await self._stop_watcher()
         await self._drain_index_queue()
         process = self._process
+        owns = self._owns_process
         self._process = None
-        if process and process.returncode is None:
+        self._adopted = False
+        self._owns_process = False
+        if owns and process and process.returncode is None:
             try:
                 process.send_signal(signal.SIGTERM)
                 await asyncio.wait_for(process.wait(), timeout=5.0)
@@ -376,8 +453,9 @@ class GraphifyManager:
                 pass
         self._port = None
         self._base_url = None
-        await self._remove_backend_silently()
-        logger.info("GRAPHIFY_MANAGER: stopped")
+        if owns:
+            await self._remove_backend_silently()
+        logger.info("GRAPHIFY_MANAGER: stopped (owned={})", owns)
 
     async def restart(self) -> bool:
         """Restart the Graphify server."""
@@ -430,6 +508,8 @@ class GraphifyManager:
             "python": self._python_path or self._resolve_python(),
             "last_error": self._last_error,
             "mcp_registered": graphify_claude_server_registered(),
+            "owns_process": self._owns_process,
+            "adopted": self._adopted,
             "llm_backend": self._settings.graphify_llm_backend,
             "llm_model": self._settings.graphify_llm_model,
             "code_only": self._settings.graphify_code_only,

@@ -217,15 +217,17 @@ class Settings(BaseSettings):
         validation_alias="GRAPHIFY_ENABLED",
     )
     graphify_server_port: int = Field(
-        default=0,
+        default=7120,
         validation_alias="GRAPHIFY_SERVER_PORT",
         description=(
             "Port for the local Graphify MCP HTTP server. 0 selects a free "
-            "port automatically. A fixed non-zero port is recommended when "
-            "registering Graphify as a sibling Claude Code MCP server, so "
-            "Claude Code's cached mcpServers entry keeps pointing at "
-            "Graphify across restarts (Claude Code reads mcpServers at "
-            "session start)."
+            "port automatically. A fixed non-zero port (the default 7120) is "
+            "required when registering Graphify as a sibling Claude Code MCP "
+            "server: it keeps Claude Code's cached mcpServers entry pointing at "
+            "Graphify across restarts (Claude Code reads mcpServers at session "
+            "start), and lets a restarted fcc-server ADOPT the still-running "
+            "graphify on that port instead of spawning a duplicate or orphaning "
+            "the old one."
         ),
     )
     graphify_python_path: str = Field(
