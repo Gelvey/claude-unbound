@@ -837,3 +837,21 @@ textarea:focus-visible {
 #openrouterForcedStatus .status-pill {
   margin-bottom: 0;
 }
+
+/* OpenRouter forced-provider card: the fields live directly in
+   .settings-section (no .field-grid wrapper), so give the section a
+   uniform vertical rhythm and neutralize the heading/action-row margins
+   that would otherwise double up with the flex gap. */
+#openrouterForcedProviderSection .settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+#openrouterForcedProviderSection .section-heading {
+  margin-bottom: 0;
+}
+
+#openrouterForcedProviderSection .mcp-action-row {
+  margin-bottom: 0;
+}
