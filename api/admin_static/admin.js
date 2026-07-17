@@ -575,6 +575,7 @@ async function apply() {
   if (state.activeView === "mcp") await loadMcpView();
   if (state.activeView === "freebuff") await loadFreebuffView();
   if (state.activeView === "graphify") await loadGraphifyView();
+  if (state.activeView === "openrouter_policy") await loadOpenRouterView();
   showMessage(
     pending.length
       ? `Applied. Restart fcc-server to use: ${pending.join(", ")}`
@@ -2686,6 +2687,256 @@ function onFreebuffViewActivated() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// OpenRouter forced-provider (RAM-only session override)
+// ---------------------------------------------------------------------------
+
+const openrouterState = {
+  providers: [],
+  forced: null,
+  configured: false,
+  allowFallbacks: false,
+};
+
+async function loadOpenRouterView() {
+  const container = byId("openrouterForcedProviderSection");
+  if (!container) return;
+  container.innerHTML = "";
+
+  const section = document.createElement("section");
+  section.className = "settings-section";
+  const heading = document.createElement("div");
+  heading.className = "section-heading";
+  heading.innerHTML =
+    "<div><h3>Forced Provider (session only)</h3>" +
+    "<p>Pin every OpenRouter request to a single provider for this " +
+    "fcc-server session. The choice lives in RAM only — it is not written " +
+    "to disk and is lost on restart. Search OpenRouter's provider catalog, " +
+    "pick a slug, and apply.</p></div>";
+  section.appendChild(heading);
+
+  const statusRow = document.createElement("div");
+  statusRow.className = "field";
+  statusRow.id = "openrouterForcedStatus";
+  section.appendChild(statusRow);
+
+  const searchField = document.createElement("div");
+  searchField.className = "field";
+
+  const searchLabel = document.createElement("label");
+  searchLabel.htmlFor = "openrouterProviderSearch";
+  searchLabel.textContent = "Provider";
+  searchField.appendChild(searchLabel);
+
+  const searchWrap = document.createElement("div");
+  searchWrap.className = "openrouter-provider-search";
+  const searchInput = document.createElement("input");
+  searchInput.type = "text";
+  searchInput.id = "openrouterProviderSearch";
+  searchInput.placeholder = "Type to search providers (e.g. anthropic, deepinfra/turbo)";
+  searchInput.autocomplete = "off";
+
+  const dropdown = document.createElement("div");
+  dropdown.className = "openrouter-provider-dropdown";
+  dropdown.hidden = true;
+
+  searchWrap.append(searchInput, dropdown);
+  searchField.appendChild(searchWrap);
+  section.appendChild(searchField);
+
+  const fallbackField = document.createElement("div");
+  fallbackField.className = "field";
+  const fallbackLabel = document.createElement("label");
+  fallbackLabel.htmlFor = "openrouterAllowFallbacks";
+  const fallbackText = document.createElement("span");
+  fallbackText.textContent = "Allow fallback";
+  fallbackLabel.appendChild(fallbackText);
+  const fallbackInput = document.createElement("input");
+  fallbackInput.type = "checkbox";
+  fallbackInput.id = "openrouterAllowFallbacks";
+  fallbackField.append(fallbackLabel, fallbackInput);
+  const fallbackDesc = document.createElement("div");
+  fallbackDesc.className = "field-description";
+  fallbackDesc.textContent =
+    "Off = pin strictly to the selected provider (request fails if it is " +
+    "unavailable). On = let OpenRouter fall through to other providers.";
+  fallbackField.appendChild(fallbackDesc);
+  section.appendChild(fallbackField);
+
+  const actionRow = document.createElement("div");
+  actionRow.className = "mcp-action-row";
+  const applyBtn = document.createElement("button");
+  applyBtn.type = "button";
+  applyBtn.className = "primary-button";
+  applyBtn.textContent = "Apply Forced Provider";
+  const clearBtn = document.createElement("button");
+  clearBtn.type = "button";
+  clearBtn.className = "secondary-button";
+  clearBtn.textContent = "Clear";
+  actionRow.append(applyBtn, clearBtn);
+  section.appendChild(actionRow);
+
+  container.appendChild(section);
+
+  // Local selection state (slug chosen from the dropdown). Distinct from the
+  // search text so a free-typed slug still works: Apply reads this first,
+  // falling back to the trimmed input value.
+  let selectedSlug = null;
+
+  function renderStatus() {
+    const configured = openrouterState.configured;
+    const forced = openrouterState.forced;
+    const parts = [];
+    const pill = document.createElement("span");
+    if (!configured) {
+      pill.className = "status-pill warn";
+      pill.textContent = "OpenRouter API key not configured";
+    } else if (forced) {
+      pill.className = "status-pill ok";
+      pill.textContent = `Pinned: ${forced}`;
+      if (openrouterState.allowFallbacks) {
+        const note = document.createElement("span");
+        note.className = "field-description";
+        note.style.marginTop = "0.25rem";
+        note.textContent = "Fallback allowed — other providers may serve the request.";
+        statusRow.innerHTML = "";
+        statusRow.append(pill, note);
+        return;
+      }
+    } else {
+      pill.className = "status-pill neutral";
+      pill.textContent = "No provider pinned (OpenRouter default routing)";
+    }
+    statusRow.innerHTML = "";
+    statusRow.appendChild(pill);
+  }
+
+  function renderDropdown(query) {
+    dropdown.innerHTML = "";
+    const q = query.trim().toLowerCase();
+    const matches = q
+      ? openrouterState.providers
+          .filter(
+            (p) =>
+              p.name.toLowerCase().includes(q) || p.slug.toLowerCase().includes(q),
+          )
+          .slice(0, 50)
+      : [];
+    if (!matches.length) {
+      dropdown.hidden = true;
+      return;
+    }
+    matches.forEach((p) => {
+      const item = document.createElement("div");
+      item.className = "openrouter-provider-item";
+      item.innerHTML = `<strong>${p.name}</strong> <span class="openrouter-provider-slug">${p.slug}</span>`;
+      item.addEventListener("mousedown", (event) => {
+        event.preventDefault();
+      });
+      item.addEventListener("click", () => {
+        selectedSlug = p.slug;
+        searchInput.value = `${p.name} (${p.slug})`;
+        dropdown.hidden = true;
+      });
+      dropdown.appendChild(item);
+    });
+    dropdown.hidden = false;
+  }
+
+  searchInput.addEventListener("input", () => {
+    selectedSlug = null;
+    renderDropdown(searchInput.value);
+  });
+  searchInput.addEventListener("focus", () => renderDropdown(searchInput.value));
+  searchInput.addEventListener("blur", () => {
+    // Delay so click on item fires before blur hides the dropdown.
+    setTimeout(() => {
+      dropdown.hidden = true;
+    }, 150);
+  });
+
+  applyBtn.addEventListener("click", async () => {
+    const slug = (selectedSlug || searchInput.value.trim() || "").trim();
+    if (!slug) {
+      showMessage("Search and select a provider first", "error");
+      searchInput.focus();
+      return;
+    }
+    applyBtn.disabled = true;
+    const original = applyBtn.textContent;
+    applyBtn.textContent = "Applying...";
+    try {
+      const result = await api("/admin/api/openrouter/forced-provider", {
+        method: "POST",
+        body: JSON.stringify({
+          provider: slug,
+          allow_fallbacks: fallbackInput.checked,
+        }),
+      });
+      openrouterState.forced = result.forced_provider;
+      openrouterState.allowFallbacks = result.allow_fallbacks;
+      renderStatus();
+      showMessage(`OpenRouter provider pinned to "${result.forced_provider}"`, "ok");
+    } catch (error) {
+      showMessage(`Failed to set forced provider: ${error.message}`, "error");
+    } finally {
+      applyBtn.disabled = false;
+      applyBtn.textContent = original;
+    }
+  });
+
+  clearBtn.addEventListener("click", async () => {
+    clearBtn.disabled = true;
+    const original = clearBtn.textContent;
+    clearBtn.textContent = "Clearing...";
+    try {
+      const result = await api("/admin/api/openrouter/forced-provider", {
+        method: "POST",
+        body: JSON.stringify({ provider: null }),
+      });
+      openrouterState.forced = result.forced_provider;
+      openrouterState.allowFallbacks = result.allow_fallbacks;
+      selectedSlug = null;
+      searchInput.value = "";
+      fallbackInput.checked = false;
+      renderStatus();
+      showMessage("OpenRouter forced provider cleared", "ok");
+    } catch (error) {
+      showMessage(`Failed to clear forced provider: ${error.message}`, "error");
+    } finally {
+      clearBtn.disabled = false;
+      clearBtn.textContent = original;
+    }
+  });
+
+  renderStatus();
+
+  // Load current state + catalog in parallel; catalog failure is non-fatal
+  // (operator can still type a slug by hand).
+  try {
+    const [forcedRes, providersRes] = await Promise.all([
+      api("/admin/api/openrouter/forced-provider"),
+      api("/admin/api/openrouter/providers").catch(() => ({ providers: [] })),
+    ]);
+    openrouterState.forced = forcedRes.forced_provider;
+    openrouterState.allowFallbacks = forcedRes.allow_fallbacks;
+    openrouterState.configured = !!forcedRes.configured;
+    openrouterState.providers = Array.isArray(providersRes.providers)
+      ? providersRes.providers
+      : [];
+    fallbackInput.checked = !!openrouterState.allowFallbacks;
+    renderStatus();
+  } catch (error) {
+    showMessage(`OpenRouter status load failed: ${error.message}`, "error");
+  }
+}
+
+function onOpenRouterViewActivated() {
+  if (state.activeView === "openrouter_policy") {
+    loadOpenRouterView();
+  }
+}
+
 // Hook into setActiveView
 const _originalSetActiveView = setActiveView;
 setActiveView = function (viewId, opts) {
@@ -2693,6 +2944,7 @@ setActiveView = function (viewId, opts) {
   onMcpViewActivated();
   onFreebuffViewActivated();
   onGraphifyViewActivated();
+  onOpenRouterViewActivated();
 };
 
 load().catch((error) => {

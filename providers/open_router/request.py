@@ -15,6 +15,7 @@ from core.anthropic.native_messages_request import (
     build_openrouter_native_request_body,
     resolve_openrouter_provider_options,
 )
+from core.anthropic.openrouter_session import OpenRouterSessionOverrides
 from providers.exceptions import InvalidRequestError
 
 
@@ -43,6 +44,15 @@ def build_request_body(
     if settings is not None and provider_model:
         provider_options = resolve_openrouter_provider_options(provider_model, settings)
 
+    # Admin-pinned RAM-only provider: when the dashboard has forced an
+    # OpenRouter provider for this fcc-server session, pin routing via
+    # provider.order + allow_fallbacks. Server-wins merge in the body
+    # builder means this overrides any client-supplied provider.order.
+    forced = OpenRouterSessionOverrides.instance().provider_options()
+    if forced is not None:
+        provider_options = provider_options or {"provider": {}}
+        provider_options.setdefault("provider", {}).update(forced)
+
     try:
         body = build_openrouter_native_request_body(
             request_data,
@@ -53,11 +63,15 @@ def build_request_body(
     except OpenRouterExtraBodyError as exc:
         raise InvalidRequestError(str(exc)) from exc
 
+    provider_field = body.get("provider", {}) or {}
     logger.debug(
-        "OPENROUTER_REQUEST: conversion done model={} msgs={} tools={} data_collection={}",
+        "OPENROUTER_REQUEST: conversion done model={} msgs={} tools={} "
+        "data_collection={} order={} allow_fallbacks={}",
         body.get("model"),
         len(body.get("messages", [])),
         len(body.get("tools", [])),
-        body.get("provider", {}).get("data_collection"),
+        provider_field.get("data_collection"),
+        provider_field.get("order"),
+        provider_field.get("allow_fallbacks"),
     )
     return body

@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import inspect
 import ipaddress
+import time
 from pathlib import Path
 from typing import Any, Literal, cast
 from urllib.parse import urlsplit
@@ -22,8 +23,10 @@ from api.graphify import (
     save_project_registry,
 )
 from api.graphify.graphs import read_graph_summary
+from config.provider_catalog import OPENROUTER_DEFAULT_BASE
 from config.settings import Settings
 from config.settings import get_settings as get_cached_settings
+from core.anthropic.openrouter_session import OpenRouterSessionOverrides
 from providers.registry import ProviderRegistry, create_freebuff_manager
 
 from .admin_config import (
@@ -62,6 +65,20 @@ class AdminConfigPayload(BaseModel):
     """Partial config update submitted by the admin UI."""
 
     values: dict[str, Any] = Field(default_factory=dict)
+
+
+class OpenRouterForcedProviderPayload(BaseModel):
+    """RAM-only forced-provider override submitted by the admin UI.
+
+    ``provider`` is an OpenRouter provider slug (e.g. ``"anthropic"``,
+    ``"deepinfra/turbo"``). An empty/None value clears the override so
+    routing returns to OpenRouter's default. ``allow_fallbacks`` defaults
+    to ``False`` so "forcing" pins a single backend; set ``True`` to let
+    OpenRouter fall through to other providers on failure.
+    """
+
+    provider: str | None = Field(default=None)
+    allow_fallbacks: bool = Field(default=False)
 
 
 def _is_loopback_host(host: str | None) -> bool:
@@ -1217,3 +1234,97 @@ async def composio_setup(payload: ComposioSetupPayload, request: Request):
         shared_servers=shared_servers,
     )
     return result.model_dump()
+
+
+# ---------------------------------------------------------------------------
+# OpenRouter forced-provider (RAM-only session override)
+# ---------------------------------------------------------------------------
+
+# In-memory cache for the OpenRouter provider catalog. The list is stable
+# enough that a short TTL keeps the searchable selector snappy without
+# hammering OpenRouter on every keystroke or tab open.
+_OPENROUTER_PROVIDER_CACHE: dict[str, Any] = {"fetched_at": 0.0, "providers": []}
+_OPENROUTER_PROVIDER_CACHE_TTL_S = 600.0
+
+
+@router.get("/admin/api/openrouter/forced-provider", include_in_schema=False)
+async def get_openrouter_forced_provider(request: Request):
+    """Return the current RAM-only forced provider (or null when unset)."""
+    require_loopback_admin(request)
+    settings = get_cached_settings()
+    return {
+        "configured": bool(settings.open_router_api_key),
+        **OpenRouterSessionOverrides.instance().snapshot(),
+    }
+
+
+@router.post("/admin/api/openrouter/forced-provider", include_in_schema=False)
+async def set_openrouter_forced_provider(
+    payload: OpenRouterForcedProviderPayload, request: Request
+):
+    """Set or clear the RAM-only forced OpenRouter provider for this session.
+
+    The value is stored only in process memory; it is never persisted to
+    disk and is lost on fcc-server restart.
+    """
+    require_loopback_admin(request)
+    overrides = OpenRouterSessionOverrides.instance()
+    if payload.provider is None:
+        overrides.clear()
+    else:
+        overrides.set(payload.provider, allow_fallbacks=payload.allow_fallbacks)
+    return overrides.snapshot()
+
+
+@router.get("/admin/api/openrouter/providers", include_in_schema=False)
+async def list_openrouter_providers(request: Request):
+    """Return OpenRouter's provider catalog for the searchable selector.
+
+    Proxies OpenRouter's public ``/providers`` endpoint server-side (so the
+    admin UI never makes cross-origin calls) and caches the result for
+    ``_OPENROUTER_PROVIDER_CACHE_TTL_S`` seconds. Each entry is reduced to
+    ``{slug, name}`` to keep the payload small.
+    """
+    require_loopback_admin(request)
+
+    now = time.monotonic()
+    if (
+        _OPENROUTER_PROVIDER_CACHE["providers"]
+        and now - _OPENROUTER_PROVIDER_CACHE["fetched_at"]
+        < _OPENROUTER_PROVIDER_CACHE_TTL_S
+    ):
+        return {"providers": _OPENROUTER_PROVIDER_CACHE["providers"]}
+
+    settings = get_cached_settings()
+    headers: dict[str, str] = {"Accept": "application/json"}
+    if settings.open_router_api_key:
+        headers["Authorization"] = f"Bearer {settings.open_router_api_key}"
+    url = f"{OPENROUTER_DEFAULT_BASE}/providers"
+
+    try:
+        async with httpx.AsyncClient(
+            proxy=settings.open_router_proxy or None,
+            timeout=httpx.Timeout(10.0),
+        ) as client:
+            response = await client.get(url, headers=headers)
+            response.raise_for_status()
+            payload = response.json()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to fetch OpenRouter provider catalog: {exc}",
+        ) from exc
+
+    providers: list[dict[str, str]] = []
+    for entry in payload.get("data", []) if isinstance(payload, dict) else []:
+        if not isinstance(entry, dict):
+            continue
+        slug = entry.get("slug")
+        name = entry.get("name")
+        if isinstance(slug, str) and isinstance(name, str) and slug:
+            providers.append({"slug": slug, "name": name})
+    providers.sort(key=lambda item: item["name"].lower())
+
+    _OPENROUTER_PROVIDER_CACHE["providers"] = providers
+    _OPENROUTER_PROVIDER_CACHE["fetched_at"] = now
+    return {"providers": providers}

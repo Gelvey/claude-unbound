@@ -793,3 +793,47 @@ textarea:focus-visible {
   margin-top: 4px;
   margin-bottom: 12px;
 }
+
+/* OpenRouter forced-provider search combobox */
+.openrouter-provider-search {
+  position: relative;
+  max-width: 460px;
+}
+
+.openrouter-provider-dropdown {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  right: 0;
+  max-height: 240px;
+  overflow-y: auto;
+  background: var(--card);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  z-index: 20;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.openrouter-provider-item {
+  padding: 8px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--line);
+}
+
+.openrouter-provider-item:last-child {
+  border-bottom: none;
+}
+
+.openrouter-provider-item:hover {
+  background: var(--line);
+}
+
+.openrouter-provider-slug {
+  color: var(--muted);
+  font-size: 12px;
+  margin-left: 6px;
+}
+
+#openrouterForcedStatus .status-pill {
+  margin-bottom: 0;
+}

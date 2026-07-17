@@ -11,8 +11,17 @@ from core.anthropic.native_messages_request import (
     build_openrouter_native_request_body,
     resolve_openrouter_provider_options,
 )
+from core.anthropic.openrouter_session import OpenRouterSessionOverrides
 from providers.exceptions import InvalidRequestError
 from providers.open_router.request import build_request_body
+
+
+@pytest.fixture(autouse=True)
+def _reset_forced_provider_singleton():
+    """The forced-provider override is a process singleton; reset it per case."""
+    OpenRouterSessionOverrides.reset()
+    yield
+    OpenRouterSessionOverrides.reset()
 
 
 def _settings(
@@ -200,6 +209,59 @@ def test_build_request_body_without_settings_omits_provider() -> None:
     """Backward-compat: existing tests that call build_request_body without settings still work."""
     body = build_request_body(_request(), thinking_enabled=False, settings=None)
     assert "provider" not in body
+
+
+# ---------- RAM-only forced-provider (OpenRouterSessionOverrides) ----------
+
+
+def test_build_request_body_injects_forced_provider_order() -> None:
+    """When the admin pins a provider, the body pins provider.order + allow_fallbacks=False."""
+    OpenRouterSessionOverrides.instance().set("anthropic")
+    settings = _settings()
+    req = _request(model="anthropic/claude-3.5-sonnet")
+    body = build_request_body(req, thinking_enabled=False, settings=settings)
+    assert body["provider"]["order"] == ["anthropic"]
+    # data_collection policy still applied alongside the forced order.
+    assert body["provider"]["data_collection"] == "deny"
+    assert body["provider"]["allow_fallbacks"] is False
+
+
+def test_build_request_body_forced_provider_allow_fallbacks_true() -> None:
+    OpenRouterSessionOverrides.instance().set("deepinfra/turbo", allow_fallbacks=True)
+    settings = _settings()
+    req = _request(model="deepseek/deepseek-r1")
+    body = build_request_body(req, thinking_enabled=False, settings=settings)
+    assert body["provider"]["order"] == ["deepinfra/turbo"]
+    assert body["provider"]["allow_fallbacks"] is True
+
+
+def test_build_request_body_forced_provider_overrides_client_order() -> None:
+    """Server-wins: a client's provider.order in extra_body must NOT override the gateway pin."""
+    OpenRouterSessionOverrides.instance().set("anthropic")
+    settings = _settings()
+    req = _request(model="anthropic/claude-3.5-sonnet")
+    req.extra_body = {"provider": {"order": ["openai"]}}
+    body = build_request_body(req, thinking_enabled=False, settings=settings)
+    assert body["provider"]["order"] == ["anthropic"]
+
+
+def test_build_request_body_no_forced_provider_leaves_body_unchanged() -> None:
+    """Without a forced provider, the body is exactly the policy-only body."""
+    settings = _settings()
+    req = _request(model="anthropic/claude-3.5-sonnet")
+    body = build_request_body(req, thinking_enabled=False, settings=settings)
+    assert "order" not in body["provider"]
+    assert "allow_fallbacks" not in body["provider"]
+    assert body["provider"] == {"data_collection": "deny"}
+
+
+def test_build_request_body_forced_provider_applies_even_without_settings() -> None:
+    """The forced provider is a RAM override; it applies even when settings is None."""
+    OpenRouterSessionOverrides.instance().set("anthropic")
+    req = _request(model="anthropic/claude-3.5-sonnet")
+    body = build_request_body(req, thinking_enabled=False, settings=None)
+    assert body["provider"]["order"] == ["anthropic"]
+    assert body["provider"]["allow_fallbacks"] is False
 
 
 def test_build_request_body_still_rejects_reserved_extra_body_keys() -> None:
