@@ -94,11 +94,30 @@ class Backend:
             self.url = f"http://127.0.0.1:{cfg['port']}/sse"
         # tools registered by this backend (filled in on activation)
         self.tools: dict[str, types.Tool] = {}
-        # active client session (kept open for tool-call forwarding)
+        # active client session (kept open for tool-call forwarding).
+        # Owned by a long-lived ``_session_owner`` task running in the
+        # router's event loop — NOT inside any client connection's task
+        # group. The MCP SSE/HTTP client spawns a background reader task
+        # when its context manager is entered; if that ``__aenter__`` runs
+        # inside a connection's ``anyio.create_task_group()`` (as it did
+        # before), the reader is parented to that connection's cancel
+        # scope and dies when the connection closes, leaving the session's
+        # write stream closed (``anyio.ClosedResourceError`` on the next
+        # ``call_tool``) and crashing the connection's task group on
+        # teardown ("Attempted to exit a cancel scope that isn't the
+        # current tasks's current cancel scope"). The owner task keeps
+        # the session alive across connections; see ``_activate``.
         self._session: ClientSession | None = None
-        self._session_cm: Any = None
         # serialise concurrent use_server() calls for the same backend
         self._activate_lock = asyncio.Lock()
+        # serialise concurrent tools/call forwards to the same backend
+        # (the MCP ClientSession handles one request at a time)
+        self._call_lock = asyncio.Lock()
+        # control handles for the running _session_owner task, set
+        # together by _activate and cleared by _deactivate / owner finally
+        self._shutdown: asyncio.Event | None = None
+        self._owner_done: asyncio.Future | None = None
+        self._owner_task: asyncio.Task | None = None
 
     def __repr__(self) -> str:
         return f"Backend({self.name}, url={self.url}, tools={len(self.tools)})"
@@ -400,6 +419,74 @@ def _build_server(backends: dict[str, Backend]) -> Server:
 # ---------------------------------------------------------------------------
 
 
+async def _session_owner(
+    backend: Backend,
+    ready: asyncio.Future,
+    done: asyncio.Future,
+    shutdown: asyncio.Event,
+) -> None:
+    """Own a backend's MCP client session for its entire active lifetime.
+
+    Runs as a standalone ``asyncio`` task in the router's event loop —
+    deliberately NOT inside any client connection's ``anyio`` task group.
+    The MCP SSE/HTTP client enters its own ``anyio.create_task_group()``
+    on ``__aenter__`` (spawning the background reader); because this
+    owner task is not a child of a connection's task group, that reader
+    is parented to the owner's own cancel scope and survives client
+    connections coming and going. The session is created with properly
+    nested ``async with`` blocks here so it tears down cleanly on
+    deactivation or task cancellation.
+
+    Lifecycle:
+      * Signals ``ready`` (result) once the session is initialised and
+        tools fetched, or (exception) if setup failed.
+      * Stays inside the ``async with`` blocks until ``shutdown`` is set
+        (by ``_deactivate``), then exits them — closing the session and
+        client streams — and signals ``done``.
+      * If the underlying connection drops mid-life, the reader task
+        fails, the ``async with`` exits with that exception, and the
+        finally block clears ``backend._session`` so later
+        ``_forward_call`` callers get a clean "not activated" error
+        instead of ``anyio.ClosedResourceError``.
+    """
+    http_client: httpx.AsyncClient | None = None
+    try:
+        backend_type = backend.cfg.get("type", "stdio")
+        if backend_type == "http":
+            headers = backend.cfg.get("headers", {})
+            http_client = httpx.AsyncClient(headers=headers) if headers else None
+            cm = streamable_http_client(backend.url, http_client=http_client)
+        else:
+            cm = sse_client(backend.url)
+        async with cm as streams:
+            if backend_type == "http":
+                read_stream, write_stream, _get_session_id = streams
+            else:
+                read_stream, write_stream = streams
+            session = ClientSession(read_stream, write_stream)
+            async with session:
+                await session.initialize()
+                tools_result = await session.list_tools()
+                backend.tools = {t.name: t for t in tools_result.tools}
+                backend._session = session
+                if not ready.done():
+                    ready.set_result(None)
+                await shutdown.wait()
+    except BaseException as exc:
+        if not ready.done():
+            ready.set_exception(exc)
+        elif not isinstance(exc, asyncio.CancelledError):
+            log.exception("Session owner for %s failed after ready", backend.name)
+    finally:
+        backend._session = None
+        backend.tools.clear()
+        if http_client is not None:
+            with contextlib.suppress(Exception):
+                await http_client.aclose()
+        if not done.done():
+            done.set_result(None)
+
+
 async def _activate(name: str, backends: dict[str, Backend]) -> dict[str, Any]:
     backend = backends[name]
     async with backend._activate_lock:
@@ -410,26 +497,34 @@ async def _activate(name: str, backends: dict[str, Backend]) -> dict[str, Any]:
                 "name": name,
                 "tool_count": len(backend.tools),
             }
+        loop = asyncio.get_running_loop()
+        ready = loop.create_future()
+        done = loop.create_future()
+        shutdown = asyncio.Event()
+        backend._shutdown = shutdown
+        backend._owner_done = done
+        backend._owner_task = loop.create_task(
+            _session_owner(backend, ready, done, shutdown)
+        )
         try:
-            backend_type = backend.cfg.get("type", "stdio")
-            if backend_type == "http":
-                headers = backend.cfg.get("headers", {})
-                http_client = httpx.AsyncClient(headers=headers) if headers else None
-                cm = streamable_http_client(backend.url, http_client=http_client)
-                read_stream, write_stream, _get_session_id = await cm.__aenter__()
-            else:
-                cm = sse_client(backend.url)
-                read_stream, write_stream = await cm.__aenter__()
-            session = ClientSession(read_stream, write_stream)
-            await session.__aenter__()
-            await session.initialize()
-            tools_result = await session.list_tools()
-            backend.tools = {t.name: t for t in tools_result.tools}
-            backend._session = session
-            backend._session_cm = cm
-        except Exception as exc:
-            log.exception("Failed to activate backend %s", name)
-            return {"ok": False, "name": name, "error": _unwrap_exc(exc)}
+            await ready
+        except BaseException:
+            # Setup failed, or _activate itself was cancelled (e.g. the
+            # client connection dropped mid-use_server). Either way,
+            # abort the owner and wait for it to tear down so no
+            # half-built session lingers, then either report the setup
+            # error or re-raise the cancellation.
+            shutdown.set()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await done
+            backend._shutdown = None
+            backend._owner_done = None
+            backend._owner_task = None
+            exc = ready.exception()
+            if exc is not None and not isinstance(exc, asyncio.CancelledError):
+                log.exception("Failed to activate backend %s", name, exc_info=exc)
+                return {"ok": False, "name": name, "error": _unwrap_exc(exc)}
+            raise
     return {
         "ok": True,
         "name": name,
@@ -487,18 +582,22 @@ async def _reload_config(backends: dict[str, Backend]) -> dict[str, Any]:
 async def _deactivate(name: str, backends: dict[str, Backend]) -> dict[str, Any]:
     backend = backends[name]
     async with backend._activate_lock:
-        if backend._session is None:
+        shutdown = backend._shutdown
+        done = backend._owner_done
+        if shutdown is None:
             return {"ok": True, "already_inactive": True, "name": name}
-        try:
-            await backend._session.__aexit__(None, None, None)
-        except Exception:
-            log.exception("Error closing session for %s", name)
-        try:
-            await backend._session_cm.__aexit__(None, None, None)
-        except Exception:
-            log.exception("Error closing client stream for %s", name)
+        # Signal the owner task to exit its `async with` blocks (closing
+        # the session and client streams) and wait for it to finish so
+        # the next _activate can spawn a fresh owner cleanly. ``done`` is
+        # non-None whenever ``shutdown`` is — they are set together.
+        shutdown.set()
+        if done is not None:
+            with contextlib.suppress(asyncio.CancelledError):
+                await done
+        backend._shutdown = None
+        backend._owner_done = None
+        backend._owner_task = None
         backend._session = None
-        backend._session_cm = None
         backend.tools.clear()
     return {"ok": True, "name": name}
 
@@ -506,18 +605,37 @@ async def _deactivate(name: str, backends: dict[str, Backend]) -> dict[str, Any]
 async def _forward_call(
     backend: Backend, original_tool: str, arguments: dict[str, Any]
 ) -> list[types.Content]:
-    assert backend._session is not None
-    try:
-        result = await backend._session.call_tool(original_tool, arguments=arguments)
-        return list(result.content)
-    except Exception as exc:
-        log.exception("Backend %s call_tool failed", backend.name)
-        return [
-            types.TextContent(
-                type="text",
-                text=json.dumps({"ok": False, "error": str(exc)}),
-            )
-        ]
+    # Serialise calls per backend — the MCP ClientSession handles one
+    # request at a time, so concurrent forwards could interleave responses.
+    async with backend._call_lock:
+        session = backend._session
+        if session is None:
+            return [
+                types.TextContent(
+                    type="text",
+                    text=json.dumps(
+                        {
+                            "ok": False,
+                            "error": (
+                                f"backend {backend.name!r} session is not "
+                                "active (it may have dropped). Re-run "
+                                "`use_server` to reconnect."
+                            ),
+                        }
+                    ),
+                )
+            ]
+        try:
+            result = await session.call_tool(original_tool, arguments=arguments)
+            return list(result.content)
+        except Exception as exc:
+            log.exception("Backend %s call_tool failed", backend.name)
+            return [
+                types.TextContent(
+                    type="text",
+                    text=json.dumps({"ok": False, "error": _unwrap_exc(exc)}),
+                )
+            ]
 
 
 # ---------------------------------------------------------------------------
