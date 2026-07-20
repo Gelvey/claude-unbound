@@ -94,6 +94,28 @@ class Backend:
 SHARED_PREFIX = "[shared] "
 
 
+def _unwrap_exc(exc: BaseException) -> str:
+    """Flatten ExceptionGroups so callers see the root cause.
+
+    The MCP SDK wraps SSE/stdio client failures in an ``ExceptionGroup``
+    whose ``str()`` is the opaque "unhandled errors in a TaskGroup (1
+    sub-exception)". Walk the group tree and return a readable chain
+    ending in the real error (e.g. ``httpx.ConnectError: All connection
+    attempts failed``).
+    """
+    parts: list[str] = []
+    cur: BaseException | None = exc
+    while cur is not None:
+        if isinstance(cur, BaseExceptionGroup):
+            # Descend into the first sub-exception; groups here wrap one.
+            subs = cur.exceptions
+            cur = subs[0] if subs else None
+            continue
+        parts.append(f"{type(cur).__name__}: {cur}")
+        cur = cur.__cause__
+    return " | ".join(parts) if parts else str(exc)
+
+
 def load_config(path: Path) -> tuple[dict[str, Backend], dict[str, Any]]:
     cfg = json.loads(path.read_text())
     servers_cfg = cfg.get("servers", {})
@@ -354,7 +376,7 @@ async def _activate(name: str, backends: dict[str, Backend]) -> dict[str, Any]:
             backend._session_cm = cm
         except Exception as exc:
             log.exception("Failed to activate backend %s", name)
-            return {"ok": False, "name": name, "error": str(exc)}
+            return {"ok": False, "name": name, "error": _unwrap_exc(exc)}
     return {
         "ok": True,
         "name": name,

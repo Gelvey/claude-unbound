@@ -243,19 +243,31 @@ def self_test(sock_path: str) -> None:
     # but does NOT fail the self-test, because a single broken
     # supergateway shouldn't tear down the whole launcher and force the
     # user to re-launch fcc-claude just to get the 4 control tools back.
-    prefix = f"{GATEWAY_PROBE_BACKEND}__"
+    # The router registers `shared_servers` entries under a "[shared] "
+    # prefix (see SHARED_PREFIX in mcp_router.py), so resolve the actual
+    # registered name + tool prefix from the live config. Falls back to
+    # the bare name if the config is unreadable or the backend lives in
+    # `servers`.
+    probe_name = GATEWAY_PROBE_BACKEND
+    config_path = os.path.expanduser("~/.fcc/mcp_config.json")
+    try:
+        with open(config_path) as f:
+            _cfg = json.load(f)
+        if GATEWAY_PROBE_BACKEND in _cfg.get("shared_servers", {}):
+            probe_name = f"[shared] {GATEWAY_PROBE_BACKEND}"
+    except OSError, ValueError:
+        pass
+    prefix = f"{probe_name}__"
 
     def _check4() -> None:
-        activate_resp = _call_tool(
-            sock_path, "use_server", {"name": GATEWAY_PROBE_BACKEND}
-        )
+        activate_resp = _call_tool(sock_path, "use_server", {"name": probe_name})
         # Parse the TextContent payload properly instead of substring
         # matching on the raw response (which is fragile to formatting
         # changes in the router).
         result = _parse_tools_call_result(activate_resp)
         _check(
             result is not None and result.get("ok") is True,
-            f"use_server({GATEWAY_PROBE_BACKEND!r}) did not succeed:\n"
+            f"use_server({probe_name!r}) did not succeed:\n"
             f"  parsed result: {result}\n"
             f"  raw response: {activate_resp}",
         )
@@ -266,13 +278,11 @@ def self_test(sock_path: str) -> None:
         _check(
             prefix in post_resp,
             f"no tools prefixed with {prefix!r} after use_server; "
-            f"supergateway for {GATEWAY_PROBE_BACKEND!r} may be broken.\n{post_resp}",
+            f"supergateway for {probe_name!r} may be broken.\n{post_resp}",
         )
 
     try:
-        _retry(
-            _check4, f"check 4 (use_server + tools/list for {GATEWAY_PROBE_BACKEND!r})"
-        )
+        _retry(_check4, f"check 4 (use_server + tools/list for {probe_name!r})")
     except (
         TimeoutError,
         AssertionError,
@@ -282,10 +292,10 @@ def self_test(sock_path: str) -> None:
         # Best-effort: log a warning and continue. The self-test still
         # returns success so the launcher doesn't tear the stack down.
         print(
-            f"WARNING: supergateway probe for {GATEWAY_PROBE_BACKEND!r} failed: {exc}\n"
+            f"WARNING: supergateway probe for {probe_name!r} failed: {exc}\n"
             f"  -> The 4 control tools are available, but activating the "
-            f"{GATEWAY_PROBE_BACKEND!r} backend may not work until the issue is fixed.\n"
-            f"  -> See ~/.mcp-router/logs/{GATEWAY_PROBE_BACKEND}.log for details.",
+            f"{probe_name!r} backend may not work until the issue is fixed.\n"
+            f"  -> See ~/.mcp-router/logs/{('shared.' if probe_name.startswith('[shared] ') else '')}{GATEWAY_PROBE_BACKEND}.log for details.",
             file=sys.stderr,
         )
 

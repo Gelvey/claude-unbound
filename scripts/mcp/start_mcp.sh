@@ -45,10 +45,57 @@ done
 # -- read config ---------------------------------------------------------
 # Portable read of JSON array keys (bash 3.2+ / zsh compatible).
 # mapfile requires bash 4+ (not available on macOS stock bash 3.2).
-SERVER_NAMES=()
-while IFS= read -r line; do
-    SERVER_NAMES+=("$line")
-done < <(jq -r '.servers | keys[]' "$CONFIG")
+#
+# Backends live in two registries: `servers` (per-host) and
+# `shared_servers` (cross-project, managed by the Admin UI). The
+# meta-router activates entries from BOTH, so supergateways must be
+# spawned for stdio entries in BOTH. Without this, every `[shared] *`
+# stdio backend fails to activate with httpx.ConnectError because
+# nothing is listening on its port. We collect (source\tname) pairs so
+# the spawn loop can look each entry up in the right registry and give
+# shared backends filename-safe slugs (the `[shared] ` router prefix is
+# not safe for filenames).
+BACKENDS=()
+while IFS=$'\t' read -r src name; do
+    BACKENDS+=("${src}"$'\t'"${name}")
+done < <(jq -r '.servers | keys[] | "servers\t\(.)"' "$CONFIG")
+while IFS=$'\t' read -r src name; do
+    BACKENDS+=("${src}"$'\t'"${name}")
+done < <(jq -r '.shared_servers | keys[] | "shared_servers\t\(.)"' "$CONFIG")
+
+# Slug for per-backend files. Shared backends get a `shared.` prefix so
+# their log/pid/env/wrapper files never collide with a same-named entry
+# in `servers`.
+slug_for() {
+    if [ "$1" = "shared_servers" ]; then
+        printf 'shared.%s' "$2"
+    else
+        printf '%s' "$2"
+    fi
+}
+
+# Echo the npx package spec for a stdio backend, or "" if the backend
+# isn't an npx-launched server. The package is the first non-flag token
+# in args, or the token right after `-p` (npx's --package flag). Used to
+# detect backends that share an npx package — spawning those in
+# parallel races npx's cache install (npm ENOTEMPTY) because both
+# write the same ~/.npm/_npx/<hash> dir. The first such backend warms
+# the cache; siblings wait for it to be healthy before spawning.
+npx_pkg_for() {  # <src> <name>
+    local src="$1" name="$2"
+    [ "$(jq -r ".${src}[\"${name}\"].command" "$CONFIG")" = "npx" ] || return 0
+    local tok grab=0
+    while IFS= read -r tok; do
+        if [ "$grab" = "1" ]; then printf '%s' "$tok"; return 0; fi
+        case "$tok" in
+            -p) grab=1 ;;
+            -*) ;;
+            *) printf '%s' "$tok"; return 0 ;;
+        esac
+    done < <(jq -r ".${src}[\"${name}\"].args[]?" "$CONFIG")
+}
+
+declare -A SEEN_PKG=()
 SOCKET_PATH=$(jq -r '.router_socket' "$CONFIG")
 ROUTER_PIDFILE=$(jq -r '.router_pidfile' "$CONFIG")
 ROUTER_LOG=$(jq -r '.router_log' "$CONFIG")
@@ -123,17 +170,20 @@ wait_for_health() {
 }
 
 # -- start one supergateway per stdio backend -----------------------------
-echo "[mcp] configuring supergateways for ${#SERVER_NAMES[@]} backend(s)..."
-for name in "${SERVER_NAMES[@]}"; do
-    type=$(jq -r ".servers[\"$name\"].type" "$CONFIG")
-    port=$(jq -r ".servers[\"$name\"].port" "$CONFIG")
-    logfile="$LOG_DIR/${name}.log"
-    pidfile="$RUN_DIR/${name}.pid"
+echo "[mcp] configuring supergateways for ${#BACKENDS[@]} backend(s)..."
+for entry in "${BACKENDS[@]}"; do
+    src="${entry%%$'\t'*}"
+    name="${entry#*$'\t'}"
+    type=$(jq -r ".${src}[\"${name}\"].type" "$CONFIG")
+    port=$(jq -r ".${src}[\"${name}\"].port" "$CONFIG")
+    slug=$(slug_for "$src" "$name")
+    logfile="$LOG_DIR/${slug}.log"
+    pidfile="$RUN_DIR/${slug}.pid"
 
     if [ "$type" = "sse" ]; then
-        echo "[mcp] $name: type=sse, will connect directly to remote $(jq -r ".servers[\"$name\"].url" "$CONFIG")"
+        echo "[mcp] $name: type=sse, will connect directly to remote $(jq -r ".${src}[\"${name}\"].url" "$CONFIG")"
         # No supergateway needed for remote SSE backends.
-        host=$(jq -r ".servers[\"$name\"].url" "$CONFIG" | sed -E 's|^https?://||; s|/.*$||; s|:[0-9]+$||')
+        host=$(jq -r ".${src}[\"${name}\"].url" "$CONFIG" | sed -E 's|^https?://||; s|/.*$||; s|:[0-9]+$||')
         if ! _timeout 3 bash -c "echo > /dev/tcp/$host/$port" 2>/dev/null; then
             echo "[mcp]   warn: cannot reach $host:$port (will fail at activation time)"
         fi
@@ -141,28 +191,28 @@ for name in "${SERVER_NAMES[@]}"; do
     fi
 
     if [ "$type" = "http" ]; then
-        echo "[mcp] $name: type=http, will connect directly to $(jq -r ".servers[\"$name\"].url" "$CONFIG")"
+        echo "[mcp] $name: type=http, will connect directly to $(jq -r ".${src}[\"${name}\"].url" "$CONFIG")"
         # No supergateway needed for HTTP Streamable backends.
         continue
     fi
 
-    cmd=$(jq -r ".servers[\"$name\"].command" "$CONFIG")
+    cmd=$(jq -r ".${src}[\"${name}\"].command" "$CONFIG")
     # Portable read of JSON arrays (bash 3.2+ / zsh compatible).
     ARGS=()
     while IFS= read -r line; do
         ARGS+=("$line")
-    done < <(jq -r ".servers[\"$name\"].args[]" "$CONFIG")
+    done < <(jq -r ".${src}[\"${name}\"].args[]" "$CONFIG")
     ENV_KV=()
     while IFS= read -r line; do
         ENV_KV+=("$line")
-    done < <(jq -r ".servers[\"$name\"].env // {} | to_entries[] | \"\(.key)=\\(.value)\"" "$CONFIG")
+    done < <(jq -r ".${src}[\"${name}\"].env // {} | to_entries[] | \"\(.key)=\\(.value)\"" "$CONFIG")
 
     # Write env vars to a separate file (no shell-quoting needed) and a
     # wrapper script that sources it then execs the real command. The
     # wrapper is a single, unambiguous path — supergateway's shell
     # invocation never has to parse a multi-word command.
-    envfile="$RUN_DIR/${name}.env"
-    wrapper="$RUN_DIR/${name}.sh"
+    envfile="$RUN_DIR/${slug}.env"
+    wrapper="$RUN_DIR/${slug}.sh"
     {
         echo "# Auto-generated env file for $name"
         printf 'export %q\n' "${ENV_KV[@]}"
@@ -181,6 +231,16 @@ for name in "${SERVER_NAMES[@]}"; do
     chmod 700 "$wrapper"
 
     echo "[mcp] $name: spawning supergateway on port $port (env: ${#ENV_KV[@]} var(s))"
+    # If a sibling backend already started with the same npx package,
+    # wait for it to be healthy first. Its npx install will have
+    # completed and cached the package in ~/.npm/_npx/, so this backend's
+    # `npx -y <pkg>@latest` reuses the cache instead of racing the same
+    # cache dir (npm ENOTEMPTY, which crashes the child MCP server).
+    pkgkey=$(npx_pkg_for "$src" "$name")
+    if [ -n "$pkgkey" ] && [ -n "${SEEN_PKG[$pkgkey]:-}" ]; then
+        wait_for_health "sibling $pkgkey for $name" "${SEEN_PKG[$pkgkey]}" || true
+    fi
+    [ -n "$pkgkey" ] && SEEN_PKG[$pkgkey]=$port
     (
         cd "$HOME"
         npx -y supergateway \
@@ -197,10 +257,12 @@ done
 # -- health-check the stdio supergateways ---------------------------------
 echo "[mcp] waiting up to ${HEALTH_TIMEOUT_S}s for supergateways to be healthy..."
 fails=()
-for name in "${SERVER_NAMES[@]}"; do
-    type=$(jq -r ".servers[\"$name\"].type" "$CONFIG")
+for entry in "${BACKENDS[@]}"; do
+    src="${entry%%$'\t'*}"
+    name="${entry#*$'\t'}"
+    type=$(jq -r ".${src}[\"${name}\"].type" "$CONFIG")
     if [ "$type" = "sse" ] || [ "$type" = "http" ]; then continue; fi
-    port=$(jq -r ".servers[\"$name\"].port" "$CONFIG")
+    port=$(jq -r ".${src}[\"${name}\"].port" "$CONFIG")
     if ! wait_for_health "$name" "$port"; then
         fails+=("$name:$port")
     fi
@@ -208,11 +270,14 @@ done
 if [ ${#fails[@]} -ne 0 ]; then
     echo "[mcp] FATAL: supergateways not healthy after ${HEALTH_TIMEOUT_S}s: ${fails[*]}" >&2
     echo "[mcp] check logs: $LOG_DIR/<name>.log" >&2
-    for name in "${SERVER_NAMES[@]}"; do
-        type=$(jq -r ".servers[\"$name\"].type" "$CONFIG")
+    for entry in "${BACKENDS[@]}"; do
+        src="${entry%%$'\t'*}"
+        name="${entry#*$'\t'}"
+        type=$(jq -r ".${src}[\"${name}\"].type" "$CONFIG")
         if [ "$type" = "sse" ] || [ "$type" = "http" ]; then continue; fi
+        slug=$(slug_for "$src" "$name")
         echo "[mcp]   --- $name log tail ---" >&2
-        tail -n 20 "$LOG_DIR/${name}.log" >&2 || true
+        tail -n 20 "$LOG_DIR/${slug}.log" >&2 || true
     done
     bash "$STOP_SCRIPT" --quiet || true
     exit 1
@@ -256,7 +321,7 @@ fi
 echo
 echo "[mcp] ✅ ready."
 echo "[mcp]    meta-router socket:  $SOCKET_PATH"
-echo "[mcp]    supergateways:        $(printf '%s, ' "${SERVER_NAMES[@]}" | sed 's/, $//')"
+echo "[mcp]    supergateways:        $(for entry in "${BACKENDS[@]}"; do printf '%s, ' "${entry#*$'\t'}"; done | sed 's/, $//')"
 echo "[mcp]    logs:                $LOG_DIR"
 echo "[mcp]    stop with:           $STOP_SCRIPT"
 echo "[mcp]    (or just close this kitty tab)"
