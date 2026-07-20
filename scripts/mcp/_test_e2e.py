@@ -23,6 +23,7 @@ import argparse
 import contextlib
 import json
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -257,7 +258,17 @@ def self_test(sock_path: str) -> None:
             probe_name = f"[shared] {GATEWAY_PROBE_BACKEND}"
     except OSError, ValueError:
         pass
-    prefix = f"{probe_name}__"
+    # Mirror mcp_router._tool_prefix so the substring check matches the
+    # spec-safe wire form (e.g. shared_resend__ rather than the display
+    # "[shared] resend__" — MCP tool names must match ^[a-zA-Z0-9_-]+$).
+    tool_prefix = (
+        "shared_" + probe_name[len("[shared] ") :]
+        if probe_name.startswith("[shared] ")
+        else probe_name
+    )
+    tool_prefix = re.sub(r"[^A-Za-z0-9_-]", "_", tool_prefix)
+    tool_prefix = re.sub(r"__+", "_", tool_prefix).strip("_")
+    prefix = f"{tool_prefix}__"
 
     def _check4() -> None:
         activate_resp = _call_tool(sock_path, "use_server", {"name": probe_name})

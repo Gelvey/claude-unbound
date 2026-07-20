@@ -22,9 +22,13 @@ Architecture
 - When the LLM calls an activated tool, the router forwards `tools/call`
   to the matching backend session and relays the response.
 
-The router keeps each backend's tools prefixed with the backend name
-(e.g. `stripe__create_payment_intent`) to avoid collisions across
-backends that may share tool names.
+The router keeps each backend's tools prefixed with a spec-safe slug
+derived from the backend name (e.g. `composio__get_version`, or
+`shared_growthbook__get_projects` for a shared backend whose display
+name is `[shared] growthbook`) to avoid collisions across backends that
+may share tool names. MCP tool names must match `^[a-zA-Z0-9_-]{1,64}$`,
+so the `[shared] ` display prefix is stripped to `shared_` and any other
+non-safe char is replaced with `_` before it appears on the wire.
 """
 
 from __future__ import annotations
@@ -35,6 +39,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -72,6 +77,14 @@ class Backend:
 
     def __init__(self, name: str, cfg: dict[str, Any]) -> None:
         self.name = name
+        # Spec-safe prefix used to build advertised tool names. MCP tool
+        # names must match ^[a-zA-Z0-9_-]{1,64}$; the display `name` for
+        # shared backends is "[shared] <name>" which contains brackets
+        # and a space, so it can't be used directly in a tool name. We
+        # keep `name` for list_servers/use_server (human-readable) and
+        # use `tool_prefix` for the wire tool name (e.g. shared_growthbook
+        # -> shared_growthbook__get_projects).
+        self.tool_prefix = _tool_prefix(name)
         self.cfg = cfg
         if cfg.get("url"):
             self.url = cfg["url"]
@@ -92,6 +105,25 @@ class Backend:
 
 
 SHARED_PREFIX = "[shared] "
+
+
+def _tool_prefix(name: str) -> str:
+    """Build a spec-safe tool-name prefix from a backend display name.
+
+    MCP tool names must match ``^[a-zA-Z0-9_-]{1,64}$``. Shared backends
+    are registered under the display name ``[shared] <name>`` (brackets +
+    space are invalid in tool names), so strip the display prefix and
+    replace every remaining non-``[A-Za-z0-9_-]`` char with ``_``,
+    collapsing runs so no ``__`` sneaks in and breaks ``_unprefix``'s
+    split-on-first-``__``. Non-shared names (e.g. ``composio``,
+    ``supabase-clickdns``) already match the spec and pass through.
+    """
+    s = name
+    if s.startswith(SHARED_PREFIX):
+        s = "shared_" + s[len(SHARED_PREFIX) :]
+    s = re.sub(r"[^A-Za-z0-9_-]", "_", s)
+    s = re.sub(r"__+", "_", s).strip("_")
+    return (s or "backend")[:64]
 
 
 def _unwrap_exc(exc: BaseException) -> str:
@@ -134,11 +166,19 @@ def load_config(path: Path) -> tuple[dict[str, Backend], dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-def _prefixed(tool_name: str, backend_name: str) -> str:
-    return f"{backend_name}__{tool_name}"
+def _prefixed(tool_name: str, backend_prefix: str) -> str:
+    """Join a backend's spec-safe tool_prefix with a backend tool name."""
+    return f"{backend_prefix}__{tool_name}"
 
 
 def _unprefix(prefixed: str) -> tuple[str, str] | None:
+    """Split an advertised tool name back into (tool_prefix, original).
+
+    Splits on the FIRST ``__`` so backend tool names that happen to
+    contain ``__`` are preserved. The caller maps ``tool_prefix`` back
+    to a Backend via ``Backend.tool_prefix`` (the backends dict is keyed
+    by the display name, which differs for shared backends).
+    """
     backend, sep, original = prefixed.partition("__")
     if not sep or not backend or not original:
         return None
@@ -159,9 +199,12 @@ CONTROL_TOOL_SCHEMAS: dict[str, types.Tool] = {
         description=(
             "Activate a backend MCP server. Connects to it, fetches its "
             "tools, and registers them under the namespace "
-            "`<backend_name>__<tool_name>`. After this call returns, the "
-            "LLM MUST call `tools/list` to see the newly registered tools. "
-            "Pass `name` = the backend's name from `list_servers`."
+            "`<tool_prefix>__<tool_name>` where `<tool_prefix>` is a "
+            "spec-safe slug of the backend name (e.g. `composio` -> "
+            "`composio__get_version`; `[shared] growthbook` -> "
+            "`shared_growthbook__get_projects`). After this call returns, "
+            "the LLM MUST call `tools/list` to see the newly registered "
+            "tools. Pass `name` = the backend's name from `list_servers`."
         ),
         inputSchema={
             "type": "object",
@@ -229,7 +272,7 @@ def _build_server(backends: dict[str, Backend]) -> Server:
         tools = list(CONTROL_TOOL_SCHEMAS.values())
         tools.extend(
             types.Tool(
-                name=_prefixed(t.name, backend.name),
+                name=_prefixed(t.name, backend.tool_prefix),
                 description=f"[{backend.name}] {t.description or ''}".strip(),
                 inputSchema=t.inputSchema,
             )
@@ -268,10 +311,11 @@ def _build_server(backends: dict[str, Backend]) -> Server:
                 ]
             result = await _activate(target, backends)
             if result.get("ok") and not result.get("already_active"):
+                tp = backends[target].tool_prefix
                 result["next_step"] = (
                     "Now call `tools/list` so the LLM can see the newly "
-                    f"registered tools from `{target}` (prefixed "
-                    f"with `{target}__`)."
+                    f"registered tools from `{target}` (advertised as "
+                    f"`{tp}__<tool>`, e.g. `{tp}__get_version`)."
                 )
             return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
 
@@ -303,9 +347,20 @@ def _build_server(backends: dict[str, Backend]) -> Server:
             result = await _reload_config(backends)
             return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
 
-        # Dynamic tool: must be prefixed with backend name
+        # Dynamic tool: must be prefixed with the backend's spec-safe
+        # tool_prefix (e.g. ``shared_growthbook__get_projects``). Map the
+        # prefix back to the Backend via tool_prefix — the backends dict
+        # is keyed by the display name, which differs for shared ones.
         parts = _unprefix(name)
-        if parts is None or parts[0] not in backends:
+        if parts is not None:
+            prefix, original = parts
+            backend = next(
+                (b for b in backends.values() if b.tool_prefix == prefix), None
+            )
+        else:
+            backend = None
+            original = ""
+        if parts is None or backend is None:
             return [
                 types.TextContent(
                     type="text",
@@ -320,8 +375,6 @@ def _build_server(backends: dict[str, Backend]) -> Server:
                     ),
                 )
             ]
-        backend_name, original = parts
-        backend = backends[backend_name]
         if backend._session is None:
             return [
                 types.TextContent(
@@ -330,7 +383,7 @@ def _build_server(backends: dict[str, Backend]) -> Server:
                         {
                             "ok": False,
                             "error": (
-                                f"backend {backend_name!r} is not "
+                                f"backend {backend.name!r} is not "
                                 "activated. Call `use_server` first."
                             ),
                         }
