@@ -95,7 +95,36 @@ npx_pkg_for() {  # <src> <name>
     done < <(jq -r ".${src}[\"${name}\"].args[]?" "$CONFIG")
 }
 
-declare -A SEEN_PKG=()
+# Portable substitute for an associative array (macOS stock bash 3.2
+# has no `declare -A`). Maps an npx package spec -> the port of the most
+# recently started backend using it, so siblings can wait for that
+# port's supergateway to be healthy before spawning (avoiding the npx
+# cache-install race described above npx_pkg_for). The whole script is
+# written for bash 3.2 (no mapfile, no associative arrays); keep it that
+# way so `#!/usr/bin/env bash` resolves to /bin/bash on stock macOS.
+SEEN_PKG_KEYS=()
+SEEN_PKG_PORTS=()
+seen_pkg_get() {  # <key> -> echoes port, returns 1 if absent
+    local key="$1" i
+    for i in "${!SEEN_PKG_KEYS[@]}"; do
+        if [ "${SEEN_PKG_KEYS[$i]}" = "$key" ]; then
+            printf '%s' "${SEEN_PKG_PORTS[$i]}"
+            return 0
+        fi
+    done
+    return 1
+}
+seen_pkg_set() {  # <key> <port>  (overwrites if key already present)
+    local key="$1" port="$2" i
+    for i in "${!SEEN_PKG_KEYS[@]}"; do
+        if [ "${SEEN_PKG_KEYS[$i]}" = "$key" ]; then
+            SEEN_PKG_PORTS[$i]="$port"
+            return 0
+        fi
+    done
+    SEEN_PKG_KEYS+=("$key")
+    SEEN_PKG_PORTS+=("$port")
+}
 SOCKET_PATH=$(jq -r '.router_socket' "$CONFIG")
 ROUTER_PIDFILE=$(jq -r '.router_pidfile' "$CONFIG")
 ROUTER_LOG=$(jq -r '.router_log' "$CONFIG")
@@ -237,10 +266,13 @@ for entry in "${BACKENDS[@]}"; do
     # `npx -y <pkg>@latest` reuses the cache instead of racing the same
     # cache dir (npm ENOTEMPTY, which crashes the child MCP server).
     pkgkey=$(npx_pkg_for "$src" "$name")
-    if [ -n "$pkgkey" ] && [ -n "${SEEN_PKG[$pkgkey]:-}" ]; then
-        wait_for_health "sibling $pkgkey for $name" "${SEEN_PKG[$pkgkey]}" || true
+    if [ -n "$pkgkey" ]; then
+        prev=$(seen_pkg_get "$pkgkey") || true
+        if [ -n "$prev" ]; then
+            wait_for_health "sibling $pkgkey for $name" "$prev" || true
+        fi
+        seen_pkg_set "$pkgkey" "$port"
     fi
-    [ -n "$pkgkey" ] && SEEN_PKG[$pkgkey]=$port
     (
         cd "$HOME"
         npx -y supergateway \
