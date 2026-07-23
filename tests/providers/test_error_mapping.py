@@ -236,6 +236,14 @@ def test_auth_status_with_model_error_body_is_not_only_check_api_key():
     assert msg != "Provider authentication failed. Check API key."
 
 
+def test_openai_api_timeout_error_maps_to_overloaded():
+    """openai.APITimeoutError (Cloudflare AI 408 via SDK) -> OverloadedError."""
+    exc = openai.APITimeoutError(request=Request("POST", "http://test"))
+    mapped = map_error(exc)
+    assert isinstance(mapped, OverloadedError)
+    assert mapped.status_code == 529
+
+
 def test_http_status_error_json_body_is_compact_and_visible():
     response = Response(
         status_code=400,

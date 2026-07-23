@@ -527,3 +527,44 @@ class TestProviderRateLimiter:
 
         assert nim.is_blocked() is True
         assert openrouter.is_blocked() is False
+
+    @pytest.mark.asyncio
+    async def test_execute_with_retry_succeeds_on_openai_api_timeout_error(self):
+        """openai.APITimeoutError (Cloudflare AI 408 via SDK) is retried with backoff."""
+        import openai
+        from httpx import Request
+
+        GlobalRateLimiter.reset_instance()
+        limiter = GlobalRateLimiter.get_instance(rate_limit=100, rate_window=60)
+
+        call_count = 0
+
+        async def timeout_then_ok():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise openai.APITimeoutError(request=Request("POST", "http://x"))
+            return "ok"
+
+        result = await limiter.execute_with_retry(
+            timeout_then_ok, max_retries=2, base_delay=0.01, max_delay=0.1, jitter=0
+        )
+        assert result == "ok"
+        assert call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_execute_with_retry_exhausts_openai_api_timeout_error(self):
+        """When all APITimeoutError retries exhausted, last exception is raised."""
+        import openai
+        from httpx import Request
+
+        GlobalRateLimiter.reset_instance()
+        limiter = GlobalRateLimiter.get_instance(rate_limit=100, rate_window=60)
+
+        async def always_timeout():
+            raise openai.APITimeoutError(request=Request("POST", "http://x"))
+
+        with pytest.raises(openai.APITimeoutError):
+            await limiter.execute_with_retry(
+                always_timeout, max_retries=2, base_delay=0.01, max_delay=0.1, jitter=0
+            )

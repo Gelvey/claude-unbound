@@ -286,6 +286,8 @@ def map_error(
                 raw_error=str(e),
             )
         return APIError(message, status_code=500, raw_error=str(e))
+    if isinstance(e, openai.APITimeoutError):
+        return OverloadedError(message, raw_error=str(e))
     if isinstance(e, openai.APIError):
         return APIError(
             message, status_code=getattr(e, "status_code", 500), raw_error=str(e)
