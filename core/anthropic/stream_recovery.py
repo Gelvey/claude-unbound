@@ -109,12 +109,14 @@ def is_retryable_stream_error(exc: BaseException) -> bool:
         return False
     if isinstance(exc, httpx.HTTPStatusError):
         status = exc.response.status_code
-        return status == 429 or 500 <= status <= 599
+        return status in (408, 429) or 500 <= status <= 599
     if isinstance(exc, openai.RateLimitError):
         return True
     if isinstance(exc, openai.APIStatusError):
         status = getattr(exc, "status_code", None)
-        return isinstance(status, int) and (status == 429 or 500 <= status <= 599)
+        return isinstance(status, int) and (
+            status in (408, 429) or 500 <= status <= 599
+        )
     return isinstance(
         exc,
         (

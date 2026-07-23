@@ -137,6 +137,15 @@ class TestMapError:
         result = map_error(exc)
         assert result is exc
 
+    def test_http_408_maps_to_overloaded(self):
+        """HTTP 408 (Request Timeout) from httpx is mapped to OverloadedError."""
+        request = Request("GET", "https://example.test")
+        exc = HTTPStatusError(
+            "request timeout", request=request, response=Response(408)
+        )
+        result = map_error(exc)
+        assert isinstance(result, OverloadedError)
+
 
 def test_user_facing_message_read_timeout_empty_string():
     """ReadTimeout wrapping TimeoutError should still produce readable text."""

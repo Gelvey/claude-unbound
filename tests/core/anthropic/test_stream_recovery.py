@@ -43,6 +43,17 @@ def test_retryable_stream_error_classifies_transport_and_http_status() -> None:
     )
 
 
+def test_retryable_stream_error_includes_408() -> None:
+    """HTTP 408 (Request Timeout) is retryable — Cloudflare Workers AI returns
+    this instead of 5xx when a generation exceeds its per-request time budget."""
+    request = httpx.Request("GET", "https://example.test")
+    assert is_retryable_stream_error(
+        httpx.HTTPStatusError(
+            "request timeout", request=request, response=httpx.Response(408)
+        )
+    )
+
+
 def test_stream_recovery_session_advances_early_retry_and_discards_holdback() -> None:
     session = StreamRecoverySession(provider_name="TEST", request_id="REQ")
 

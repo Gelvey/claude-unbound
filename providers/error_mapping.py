@@ -300,6 +300,8 @@ def map_error(
             return RateLimitError(message, raw_error=str(e))
         if status == 400:
             return InvalidRequestError(message, raw_error=str(e))
+        if status == 408:
+            return OverloadedError(message, raw_error=str(e))
         if status >= 500:
             if status in (502, 503, 504):
                 return OverloadedError(message, raw_error=str(e))

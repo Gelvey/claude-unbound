@@ -21,8 +21,14 @@ DEFAULT_UPSTREAM_MAX_RETRIES = UPSTREAM_TRANSIENT_TOTAL_ATTEMPTS - 1
 
 
 def _upstream_http_retryable(code: int) -> bool:
-    """True for rate limit / upstream server failures that should backoff-retry."""
-    return code == 429 or 500 <= code <= 599
+    """True for rate limit / upstream server failures that should backoff-retry.
+
+    408 (Request Timeout) is included because some upstream providers (notably
+    Cloudflare Workers AI on free-tier or under load) return 408 instead of a
+    5xx when a generation exceeds the per-request time budget.  Retrying with
+    backoff is the correct response — the next attempt usually succeeds.
+    """
+    return code in (408, 429) or 500 <= code <= 599
 
 
 def retryable_upstream_status(exc: BaseException) -> int | None:
