@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Claude Unbound (Desktop)
+Comment=Launch Claude Unbound with the Claude Desktop GUI instead of the CLI
+# @REPO_DIR@ is replaced with the absolute repo path at install time.
+# One-line install: sed "s#@REPO_DIR@#$HOME/claude-unbound#" scripts/claude-unbound-desktop.desktop > ~/.local/share/applications/claude-unbound-desktop.desktop
+Exec=sh -c "FCC_LAUNCH_MODE=desktop exec @REPO_DIR@/scripts/launcher.sh"
+Icon=utilities-terminal
+Type=Application
+Terminal=false
+Categories=Development;Utility;

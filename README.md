@@ -496,6 +496,35 @@ Set the environment for `acp.registry.claude-acp`:
 
 Restart the IDE after changing the file.
 
+### 6. Claude Desktop (unofficial Linux build)
+
+The unofficial Claude Desktop Linux build ([aaddrick/claude-desktop-debian](https://github.com/aaddrick/claude-desktop-debian), package `claude-desktop-unofficial`) can be wired into the proxy so it routes inference through the gateway **without requiring an Anthropic login** — the desktop equivalent of the CLI's env-var injection.
+
+Wiring is via managed settings at `/etc/claude-desktop/managed-settings.json` (populated by `scripts/claude-desktop/setup-gateway.sh`), which points the desktop app at the local proxy and injects the model list from the live `/v1/models` endpoint.
+
+`scripts/launcher.sh` can launch the desktop app instead of the CLI: answer `y` at the "Launch Claude Desktop instead of Claude Code CLI?" preflight prompt, or set `FCC_LAUNCH_MODE=desktop`, or use the `Claude Unbound (Desktop)` `.desktop` shortcut.
+
+**One-time setup**
+
+```bash
+bash scripts/claude-desktop/setup-gateway.sh
+```
+
+This writes the managed settings file via `sudo` and populates `inferenceModels` from the running proxy. To unwire:
+
+```bash
+bash scripts/claude-desktop/setup-gateway.sh --unwire
+```
+
+In gateway mode the desktop app does not prompt for a claude.ai login; Chat/Cowork tabs requiring a claude.ai identity are unavailable (matches the CLI's no-login behaviour).
+
+**Install the desktop app (Fedora/RHEL)**
+
+```bash
+sudo curl -fsSL https://pkg.claude-desktop-debian.dev/rpm/claude-desktop-unofficial.repo -o /etc/yum.repos.d/claude-desktop-unofficial.repo
+sudo dnf install claude-desktop-unofficial
+```
+
 ## Optional Integrations
 
 For every integration below, change **managed proxy settings** only in the **Admin UI** at `/admin`: edit fields, click **Validate**, then **Apply**. The footer shows where the managed config is stored; this README does not walk through editing that file by hand.

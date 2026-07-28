@@ -13,6 +13,9 @@ REPO_DIR="$HOME/claude-unbound"
 # Default points to the publicly-published claude-unbound fork.
 FORK_URL="${FCC_FORK_URL:-https://github.com/Gelvey/claude-unbound}"
 SOCKET="${XDG_RUNTIME_DIR:-/tmp}/fcc-kitty-$$-$(date +%s%N 2>/dev/null || date +%s).sock"
+# ask (default) prompts in preflight; desktop skips prompt and uses desktop mode;
+# cli skips prompt and uses CLI mode.
+MODE="${FCC_LAUNCH_MODE:-ask}"
 
 # ── Per-tab colour palette (active / inactive) ──────────────────────────────
 # Server=blue, MCP Router=green, Claude Code=orange. Applied immediately
@@ -182,6 +185,22 @@ else
     echo "  ✓ Local checkout is already up to date"
 fi
 
+# ── Launch mode selection ───────────────────────────────────────────────────
+if [ "$MODE" = "desktop" ] || [ "$MODE" = "cli" ]; then
+    echo "$MODE" > "$MODE_FILE"
+else
+    echo ""
+    echo "  ─────────────────────────────────────────────────────────"
+    printf "  Launch Claude Desktop instead of Claude Code CLI? [y/N] "
+    read -r MODE_REPLY
+    echo ""
+    if [ "$MODE_REPLY" = "y" ] || [ "$MODE_REPLY" = "Y" ]; then
+        echo "desktop" > "$MODE_FILE"
+    else
+        echo "cli" > "$MODE_FILE"
+    fi
+fi
+
 echo ""
 echo "[fcc] Preflight complete — launching Claude Unbound..."
 sleep 1
@@ -195,7 +214,7 @@ chmod +x "$PREFLIGHT_SCRIPT"
 # so we open a dedicated kitty window that runs the preflight script and
 # `wait` for the user to dismiss it before the main tabs can open.
 if [ -t 1 ] && [ -t 0 ]; then
-    if ! bash "$PREFLIGHT_SCRIPT"; then
+    if ! MODE="$MODE" MODE_FILE="$PREFLIGHT_DIR/mode" bash "$PREFLIGHT_SCRIPT"; then
         echo "[fcc] WARNING: preflight sync check failed, continuing with local checkout" >&2
     fi
 else
@@ -206,7 +225,7 @@ else
         --listen-on "unix:$PREFLIGHT_SOCKET" \
         --override "allow_remote_control=socket-only" \
         --title "Claude Unbound — Preflight" \
-        bash -c "$PREFLIGHT_SCRIPT; printf '\nPress any key to launch Claude Unbound... '; read -rn 1; exit 0" &
+        env MODE="$MODE" MODE_FILE="$PREFLIGHT_DIR/mode" bash -c "$PREFLIGHT_SCRIPT; printf '\nPress any key to launch Claude Unbound... '; read -rn 1; exit 0" &
 
     PREFLIGHT_KITTY_PID=$!
     sleep 0.5
@@ -226,7 +245,28 @@ else
         notify critical "Claude Unbound" "Pre-flight sync check did not complete cleanly — continuing"
     }
 fi
+
+# ── Read launch mode from preflight ──────────────────────────────────────────
+MODE_FILE="$PREFLIGHT_DIR/mode"
+LAUNCH_MODE="cli"  # default — never regress
+if [ -f "$MODE_FILE" ]; then
+    LAUNCH_MODE=$(cat "$MODE_FILE" 2>/dev/null | tr -d '[:space:]')
+    case "$LAUNCH_MODE" in
+        desktop|cli) ;;
+        *) LAUNCH_MODE="cli" ;;
+    esac
+fi
 rm -rf "$PREFLIGHT_DIR"
+
+# ── Desktop detection + not-installed fallback ───────────────────────────────
+if [ "$LAUNCH_MODE" = "desktop" ] && ! command -v claude-desktop-unofficial >/dev/null 2>&1; then
+    echo "[fcc] Claude Desktop (unofficial) not found on PATH." >&2
+    echo "[fcc] Install it from https://github.com/aaddrick/claude-desktop-debian :" >&2
+    echo "[fcc]   sudo curl -fsSL https://pkg.claude-desktop-debian.dev/rpm/claude-desktop-unofficial.repo -o /etc/yum.repos.d/claude-desktop-unofficial.repo" >&2
+    echo "[fcc]   sudo dnf install claude-desktop-unofficial" >&2
+    notify critical "Claude Unbound" "Claude Desktop not installed — falling back to CLI. See terminal for install commands."
+    LAUNCH_MODE="cli"
+fi
 
 # ── Dependency check (remaining deps — after preflight) ──────────────────────
 # fcc-server and fcc-claude are launched via `uv run` from the repo so the
@@ -267,7 +307,7 @@ if [ ! -f "$MCP_CONFIG_FILE" ]; then
     fi
 fi
 
-# ── Open kitty with the 3 tabs ─────────────────────────────────────────────────
+# ── Open kitty with tabs ─────────────────────────────────────────────────
 # A temp kitty.conf holds the Ctrl+Shift+T keybinding so that the tab title
 # "Claude Code" (with a space) is parsed correctly — kitty's config parser
 # handles quoted strings, but --override values passed from the shell cannot
@@ -275,6 +315,8 @@ fi
 #
 # Ctrl+Shift+T opens a ready, orange, connected Claude Code tab
 # (scripts/kitty/_claude_tab.sh) instead of the default bare shell.
+# This keybinding is available in BOTH modes so users can still open a
+# CLI tab manually even when launching in desktop mode.
 KITTY_CONF=$(mktemp "${TMPDIR:-/tmp}/fcc-kitty-conf.XXXXXX")
 cat > "$KITTY_CONF" <<EOF
 map ctrl+shift>t launch --type=tab --tab-title "Claude Code" --cwd $REPO_DIR bash $REPO_DIR/scripts/kitty/_claude_tab.sh
@@ -286,40 +328,8 @@ cleanup_kitty_conf() {
 }
 trap cleanup_kitty_conf EXIT INT TERM
 
-kitty \
-    --config "$KITTY_CONF" \
-    --listen-on "unix:$SOCKET" \
-    --override "allow_remote_control=socket-only" \
-    --override "tab_bar_style=powerline" \
-    --override "tab_powerline_style=slanted" \
-    --override "tab_bar_min_tabs=1" \
-    --override "tab_title_max_length=28" \
-    --override "active_tab_font_style=bold" \
-    --override "tab_separator= " \
-    --title "Claude Unbound" \
-    bash -c "echo '=== Claude Unbound CLI (waiting ${FCC_CLIENT_WARMUP_S:-5}s for fcc-server) ===' && sleep ${FCC_CLIENT_WARMUP_S:-5} && uv run fcc-claude; exec bash" &
-
-KITTY_PID=$!
-
-if ! kill -0 "$KITTY_PID" 2>/dev/null; then
-    notify critical "Claude Unbound" "kitty failed to start"
-    exit 1
-fi
-
-# Wait for the remote-control socket before doing anything with kitten @.
-echo "[fcc] kitty started (pid $KITTY_PID), waiting for remote-control socket..."
-if ! wait_for_socket 10; then
-    notify critical "Claude Unbound" "kitty remote-control socket did not become ready"
-    exit 1
-fi
-
-# Colour the first tab (the Claude Unbound CLI tab, titled "Claude Unbound")
-# orange. The fcc-claude session is interactive here too.
-color_tab "Claude Unbound" \
-    "$CLAUDE_ACTIVE_BG" "$CLAUDE_ACTIVE_FG" \
-    "$CLAUDE_INACTIVE_BG" "$CLAUDE_INACTIVE_FG"
-
-# Spawn the other 2 tabs into the same kitty window
+# spawn_tab: launch a new tab into the kitty window by title.
+# Args: title command...
 spawn_tab() {
     local title="$1"; shift
     local _err
@@ -331,50 +341,181 @@ spawn_tab() {
     fi
 }
 
-# Tab 1: MCP Router (only if start_mcp.sh exists and deps are present)
-if [ -x "$MCP_SCRIPT" ] && command -v npx >/dev/null 2>&1 \
-        && command -v socat >/dev/null 2>&1 \
-        && command -v jq >/dev/null 2>&1 \
-        && command -v uv >/dev/null 2>&1; then
-    spawn_tab "MCP Router" bash -c "
-        echo '=== MCP Router ==='
-        $MCP_SCRIPT
-        rc=\$?
-        echo
-        echo \"--- start_mcp.sh exited with code \$rc ---\"
-        if [ \$rc -ne 0 ]; then
-            echo 'ERROR: start_mcp.sh failed. Check ~/.mcp-router/logs/ for details.'
+# ── Desktop gateway setup (desktop mode only) ───────────────────────────────
+if [ "$LAUNCH_MODE" = "desktop" ]; then
+    DESKTOP_SETUP="$REPO_DIR/scripts/claude-desktop/setup-gateway.sh"
+    if [ -f "$DESKTOP_SETUP" ]; then
+        if ! bash "$DESKTOP_SETUP" --check 2>/dev/null; then
+            echo "[fcc] Gateway not wired — running setup-gateway.sh..."
+            if ! bash "$DESKTOP_SETUP"; then
+                echo "[fcc] setup-gateway.sh failed — falling back to CLI mode" >&2
+                notify normal "Claude Unbound" "Gateway setup failed — falling back to CLI"
+                LAUNCH_MODE="cli"
+            fi
         fi
-        exec bash
-    "
-    color_tab "MCP Router" \
-        "$ROUTER_ACTIVE_BG" "$ROUTER_ACTIVE_FG" \
-        "$ROUTER_INACTIVE_BG" "$ROUTER_INACTIVE_FG"
+    else
+        echo "[fcc] setup-gateway.sh not found — falling back to CLI mode" >&2
+        notify normal "Claude Unbound" "Gateway setup script missing — falling back to CLI"
+        LAUNCH_MODE="cli"
+    fi
+fi
+
+# ── Launch kitty + tabs ──────────────────────────────────────────────────────
+if [ "$LAUNCH_MODE" = "desktop" ]; then
+    # Desktop mode: first kitty window IS the Server tab (blue).
+    # No CLI tab — the desktop app replaces it.
+    kitty \
+        --config "$KITTY_CONF" \
+        --listen-on "unix:$SOCKET" \
+        --override "allow_remote_control=socket-only" \
+        --override "tab_bar_style=powerline" \
+        --override "tab_powerline_style=slanted" \
+        --override "tab_bar_min_tabs=1" \
+        --override "tab_title_max_length=28" \
+        --override "active_tab_font_style=bold" \
+        --override "tab_separator= " \
+        --title "Claude Unbound" \
+        bash -c "echo '=== Claude Unbound Server ===' && uv run fcc-server; exec bash" &
+
+    KITTY_PID=$!
+
+    if ! kill -0 "$KITTY_PID" 2>/dev/null; then
+        notify critical "Claude Unbound" "kitty failed to start"
+        exit 1
+    fi
+
+    echo "[fcc] kitty started (pid $KITTY_PID), waiting for remote-control socket..."
+    if ! wait_for_socket 10; then
+        notify critical "Claude Unbound" "kitty remote-control socket did not become ready"
+        exit 1
+    fi
+
+    # Colour the first tab (Server) blue.
+    color_tab "Claude Unbound" \
+        "$SERVER_ACTIVE_BG" "$SERVER_ACTIVE_FG" \
+        "$SERVER_INACTIVE_BG" "$SERVER_INACTIVE_FG"
+
+    # Tab 1: MCP Router (green, only if start_mcp.sh exists and deps are present)
+    if [ -x "$MCP_SCRIPT" ] && command -v npx >/dev/null 2>&1 \
+            && command -v socat >/dev/null 2>&1 \
+            && command -v jq >/dev/null 2>&1 \
+            && command -v uv >/dev/null 2>&1; then
+        spawn_tab "MCP Router" bash -c "
+            echo '=== MCP Router ==='
+            $MCP_SCRIPT
+            rc=\$?
+            echo
+            echo \"--- start_mcp.sh exited with code \$rc ---\"
+            if [ \$rc -ne 0 ]; then
+                echo 'ERROR: start_mcp.sh failed. Check ~/.mcp-router/logs/ for details.'
+            fi
+            exec bash
+        "
+        color_tab "MCP Router" \
+            "$ROUTER_ACTIVE_BG" "$ROUTER_ACTIVE_FG" \
+            "$ROUTER_INACTIVE_BG" "$ROUTER_INACTIVE_FG"
+    else
+        echo "[fcc] MCP Router tab skipped (start_mcp.sh missing or deps not on PATH)"
+    fi
+
+    # Launch the desktop GUI detached.
+    nohup setsid "$(command -v claude-desktop-unofficial)" >/dev/null 2>&1 &
+
+    TABS_OPENED=1  # Server tab always open
+    if [ -x "$MCP_SCRIPT" ] && command -v npx >/dev/null 2>&1 \
+            && command -v socat >/dev/null 2>&1 \
+            && command -v jq >/dev/null 2>&1 \
+            && command -v uv >/dev/null 2>&1; then
+        TABS_OPENED=$((TABS_OPENED + 1))
+    fi
+
+    notify normal "Claude Unbound" \
+        "Desktop + $TABS_OPENED tab(s) opened" \
+        2>/dev/null || true
+
+    activate_window "Claude" || true
+
+    echo "Claude Unbound Desktop + $TABS_OPENED tab(s) opened."
+    exit 0
 else
-    echo "[fcc] MCP Router tab skipped (start_mcp.sh missing or deps not on PATH)"
+    # CLI mode: 3 tabs — CLI (orange), MCP Router (green), Server (blue).
+    kitty \
+        --config "$KITTY_CONF" \
+        --listen-on "unix:$SOCKET" \
+        --override "allow_remote_control=socket-only" \
+        --override "tab_bar_style=powerline" \
+        --override "tab_powerline_style=slanted" \
+        --override "tab_bar_min_tabs=1" \
+        --override "tab_title_max_length=28" \
+        --override "active_tab_font_style=bold" \
+        --override "tab_separator= " \
+        --title "Claude Unbound" \
+        bash -c "echo '=== Claude Unbound CLI (waiting ${FCC_CLIENT_WARMUP_S:-5}s for fcc-server) ===' && sleep ${FCC_CLIENT_WARMUP_S:-5} && uv run fcc-claude; exec bash" &
+
+    KITTY_PID=$!
+
+    if ! kill -0 "$KITTY_PID" 2>/dev/null; then
+        notify critical "Claude Unbound" "kitty failed to start"
+        exit 1
+    fi
+
+    echo "[fcc] kitty started (pid $KITTY_PID), waiting for remote-control socket..."
+    if ! wait_for_socket 10; then
+        notify critical "Claude Unbound" "kitty remote-control socket did not become ready"
+        exit 1
+    fi
+
+    # Colour the first tab (the Claude Unbound CLI tab, titled "Claude Unbound")
+    # orange. The fcc-claude session is interactive here too.
+    color_tab "Claude Unbound" \
+        "$CLAUDE_ACTIVE_BG" "$CLAUDE_ACTIVE_FG" \
+        "$CLAUDE_INACTIVE_BG" "$CLAUDE_INACTIVE_FG"
+
+    # Tab 1: MCP Router (only if start_mcp.sh exists and deps are present)
+    if [ -x "$MCP_SCRIPT" ] && command -v npx >/dev/null 2>&1 \
+            && command -v socat >/dev/null 2>&1 \
+            && command -v jq >/dev/null 2>&1 \
+            && command -v uv >/dev/null 2>&1; then
+        spawn_tab "MCP Router" bash -c "
+            echo '=== MCP Router ==='
+            $MCP_SCRIPT
+            rc=\$?
+            echo
+            echo \"--- start_mcp.sh exited with code \$rc ---\"
+            if [ \$rc -ne 0 ]; then
+                echo 'ERROR: start_mcp.sh failed. Check ~/.mcp-router/logs/ for details.'
+            fi
+            exec bash
+        "
+        color_tab "MCP Router" \
+            "$ROUTER_ACTIVE_BG" "$ROUTER_ACTIVE_FG" \
+            "$ROUTER_INACTIVE_BG" "$ROUTER_INACTIVE_FG"
+    else
+        echo "[fcc] MCP Router tab skipped (start_mcp.sh missing or deps not on PATH)"
+    fi
+
+    # Tab 2: Claude Unbound Server (run from repo via uv so the latest source is always used)
+    spawn_tab "Server" bash -c "echo '=== Claude Unbound Server ===' && uv run fcc-server; exec bash"
+    color_tab "Server" \
+        "$SERVER_ACTIVE_BG" "$SERVER_ACTIVE_FG" \
+        "$SERVER_INACTIVE_BG" "$SERVER_INACTIVE_FG"
+
+    # The first kitty window already has the Claude Unbound CLI tab.
+
+    TABS_OPENED=2  # Claude Unbound CLI + Server always open
+    if [ -x "$MCP_SCRIPT" ] && command -v npx >/dev/null 2>&1 \
+            && command -v socat >/dev/null 2>&1 \
+            && command -v jq >/dev/null 2>&1 \
+            && command -v uv >/dev/null 2>&1; then
+        TABS_OPENED=$((TABS_OPENED + 1))
+    fi
+
+    notify normal "Claude Unbound" \
+        "$TABS_OPENED tab(s) opened (MCP / Server / Claude)" \
+        2>/dev/null || true
+
+    activate_window "Claude Unbound" || true
+
+    echo "Claude Unbound tabs opened (MCP / Server / Claude)."
+    exit 0
 fi
-
-# Tab 2: Claude Unbound Server (run from repo via uv so the latest source is always used)
-spawn_tab "Server" bash -c "echo '=== Claude Unbound Server ===' && uv run fcc-server; exec bash"
-color_tab "Server" \
-    "$SERVER_ACTIVE_BG" "$SERVER_ACTIVE_FG" \
-    "$SERVER_INACTIVE_BG" "$SERVER_INACTIVE_FG"
-
-# The first kitty window already has the Claude Unbound CLI tab.
-
-TABS_OPENED=2  # Claude Unbound CLI + Server always open
-if [ -x "$MCP_SCRIPT" ] && command -v npx >/dev/null 2>&1 \
-        && command -v socat >/dev/null 2>&1 \
-        && command -v jq >/dev/null 2>&1 \
-        && command -v uv >/dev/null 2>&1; then
-    TABS_OPENED=$((TABS_OPENED + 1))
-fi
-
-notify normal "Claude Unbound" \
-    "$TABS_OPENED tab(s) opened (MCP / Server / Claude)" \
-    2>/dev/null || true
-
-activate_window "Claude Unbound" || true
-
-echo "Claude Unbound tabs opened (MCP / Server / Claude)."
-exit 0
