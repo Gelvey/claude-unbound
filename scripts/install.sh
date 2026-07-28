@@ -525,6 +525,67 @@ print_mcp_dependency_guidance() {
     fi
 }
 
+# Offer to install the unofficial Claude Desktop app and wire it into the
+# proxy so inference routes through the gateway with no Anthropic login
+# (the desktop equivalent of the CLI's env-var injection). DNF
+# (Fedora/RHEL) only — the unofficial build is packaged as an RPM.
+# Non-interactive installs (e.g. `curl | sh`, stdin not a TTY) skip silently.
+setup_claude_desktop() {
+    if ! command -v dnf >/dev/null 2>&1; then
+        printf '\nClaude Desktop wiring: skipped (DNF/Fedora/RHEL only).\n'
+        printf '  The unofficial Claude Desktop build is packaged as an RPM.\n'
+        printf '  On other platforms, install the app manually then run:\n'
+        printf '    bash %s/scripts/claude-desktop/setup-gateway.sh\n' "$REPO_DIR"
+        return 0
+    fi
+
+    # Skip silently in non-interactive contexts (stdin is not a TTY).
+    [ -t 0 ] || return 0
+
+    printf '\n'
+    printf 'Claude Desktop (unofficial Linux build) can be wired to route\n'
+    printf '  inference through this proxy with no Anthropic login.\n'
+    printf '  Repo: https://github.com/aaddrick/claude-desktop-debian\n'
+    printf '  Install and wire Claude Desktop now? [y/N] '
+    read -r reply || reply=''
+    printf '\n'
+    case "$reply" in
+        y|Y) ;;
+        *)
+            printf 'Skipping Claude Desktop wiring.\n'
+            return 0
+            ;;
+    esac
+
+    # Install the unofficial desktop app via DNF if not already present.
+    if command -v claude-desktop-unofficial >/dev/null 2>&1; then
+        printf 'Claude Desktop (unofficial) already installed; skipping install.\n'
+    else
+        run sudo curl -fsSL https://pkg.claude-desktop-debian.dev/rpm/claude-desktop-unofficial.repo -o /etc/yum.repos.d/claude-desktop-unofficial.repo || {
+            printf 'WARNING: failed to add the claude-desktop-unofficial DNF repo; skipping wiring.\n'
+            return 0
+        }
+        run sudo dnf install -y claude-desktop-unofficial || {
+            printf 'WARNING: dnf install claude-desktop-unofficial failed; skipping wiring.\n'
+            return 0
+        }
+    fi
+
+    # Wire the gateway (writes /etc/claude-desktop/managed-settings.json via
+    # sudo). The proxy is not running during install, so the model list may
+    # be empty — re-run setup-gateway.sh after starting fcc-server to
+    # populate inferenceModels.
+    if [ -f "$REPO_DIR/scripts/claude-desktop/setup-gateway.sh" ]; then
+        run bash "$REPO_DIR/scripts/claude-desktop/setup-gateway.sh" \
+            || printf 'WARNING: setup-gateway.sh did not complete; re-run it manually after starting fcc-server.\n'
+        printf '\nTo populate the model list, start the proxy (fcc-server) and re-run:\n'
+        printf '  bash %s/scripts/claude-desktop/setup-gateway.sh\n' "$REPO_DIR"
+        printf 'To unwire later: bash %s/scripts/claude-desktop/setup-gateway.sh --unwire\n' "$REPO_DIR"
+    else
+        printf 'WARNING: setup-gateway.sh not found at %s/scripts/claude-desktop/setup-gateway.sh; skipping gateway wiring.\n' "$REPO_DIR"
+    fi
+}
+
 parse_args "$@"
 validate_args
 
@@ -582,3 +643,5 @@ printf 'Run Claude Code with: fcc-claude\n'
 printf 'Run Codex with: fcc-codex\n'
 
 print_mcp_dependency_guidance
+
+setup_claude_desktop

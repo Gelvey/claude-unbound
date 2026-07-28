@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Claude Unbound
+Comment=Launch Claude Unbound (proxy + client)
+# @REPO_DIR@ is replaced with the absolute repo path at install time.
+# One-line install: sed "s#@REPO_DIR@#$HOME/claude-unbound#" scripts/claude-unbound.desktop > ~/.local/share/applications/claude-unbound.desktop
+Exec=@REPO_DIR@/scripts/launcher.sh
+Icon=utilities-terminal
+Type=Application
+Terminal=false
+Categories=Development;Utility;
