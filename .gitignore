@@ -24,3 +24,10 @@ scripts/mcp/*.pyc
 
 # Managed FCC config directory (never part of the repo)
 .fcc/
+# Graphify extraction output — generated per-index run, not source.
+graphify-out/
+
+# Freebuff2API — a separate repo (github.com/Gelvey/Freebuff2API), tracked
+# locally as its own checkout. It was previously committed as an undeclared
+# gitlink; keep it out of this repo.
+Freebuff2API/
