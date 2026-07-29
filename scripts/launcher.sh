@@ -201,6 +201,32 @@ else
     fi
 fi
 
+# ── Claude Desktop diagnostics preflight ─────────────────────────────────────
+# If the user chose desktop mode and the unofficial build is installed, run
+# its --doctor check so issues that block features (e.g. cowork needing
+# QEMU/firmware) are surfaced before launch. The doctor always exits 0 even
+# with [WARN]/[FAIL], so we show the output and let the user opt out of
+# desktop mode if they see a dealbreaker.
+_preflight_mode="$(cat "$MODE_FILE" 2>/dev/null | tr -d '[:space:]')"
+if [ "$_preflight_mode" = "desktop" ] && command -v claude-desktop-unofficial >/dev/null 2>&1; then
+    echo ""
+    echo "  ╔══════════════════════════════════════════════════════════╗"
+    echo "  ║        Claude Desktop — Diagnostics Preflight            ║"
+    echo "  ╚══════════════════════════════════════════════════════════╝"
+    echo ""
+    claude-desktop-unofficial --doctor 2>&1 | sed 's/^/  /'
+    echo ""
+    printf "  Launch Claude Desktop anyway? [Y/n] "
+    read -r _doc_reply
+    echo ""
+    case "$_doc_reply" in
+        n|N)
+            echo "cli" > "$MODE_FILE"
+            echo "  [fcc] Switching to CLI mode per your choice."
+            ;;
+    esac
+fi
+
 echo ""
 echo "[fcc] Preflight complete — launching Claude Unbound..."
 sleep 1
@@ -212,7 +238,9 @@ chmod +x "$PREFLIGHT_SCRIPT"
 # stdout, matching the original behaviour. When invoked from a non-terminal
 # context (e.g. a .desktop shortcut) the prompt would otherwise be lost,
 # so we open a dedicated kitty window that runs the preflight script and
-# `wait` for the user to dismiss it before the main tabs can open.
+# `wait` for it to finish before the main tabs open. The preflight keeps
+# the window open only for its own interactions (e.g. the --doctor [Y/n]
+# opt-out) and a brief "Preflight complete" pause, then exits on its own.
 if [ -t 1 ] && [ -t 0 ]; then
     if ! MODE="$MODE" MODE_FILE="$PREFLIGHT_DIR/mode" bash "$PREFLIGHT_SCRIPT"; then
         echo "[fcc] WARNING: preflight sync check failed, continuing with local checkout" >&2
@@ -225,7 +253,7 @@ else
         --listen-on "unix:$PREFLIGHT_SOCKET" \
         --override "allow_remote_control=socket-only" \
         --title "Claude Unbound — Preflight" \
-        env MODE="$MODE" MODE_FILE="$PREFLIGHT_DIR/mode" bash -c "$PREFLIGHT_SCRIPT; printf '\nPress any key to launch Claude Unbound... '; read -rn 1; exit 0" &
+        env MODE="$MODE" MODE_FILE="$PREFLIGHT_DIR/mode" bash -c "$PREFLIGHT_SCRIPT; exit 0" &
 
     PREFLIGHT_KITTY_PID=$!
     sleep 0.5
@@ -235,9 +263,10 @@ else
         exit 1
     fi
 
-    # The inner bash exits via `exit 0` once the user presses a key (success
-    # path) or via non-zero if the window crashed. Treat any non-zero wait
-    # result as a non-fatal warning so the main tabs still launch.
+    # The inner bash exits via `exit 0` once the preflight script finishes
+    # (success path) or via non-zero if the window crashed. Treat any
+    # non-zero wait result as a non-fatal warning so the main tabs still
+    # launch.
     wait "$PREFLIGHT_KITTY_PID" 2>/dev/null || {
         if [ -t 2 ]; then
             echo "[fcc] WARNING: preflight sync check did not complete cleanly, continuing with local checkout" >&2

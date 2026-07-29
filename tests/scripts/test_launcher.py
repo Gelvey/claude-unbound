@@ -244,7 +244,7 @@ def test_launcher_sh_detects_desktop_linux_official() -> None:
     # The unofficial binary should be checked first (backward compat).
     unofficial_idx = body.index("claude-desktop-unofficial")
     # Find the official binary after the unofficial one
-    after_unofficial = body[unofficial_idx + len("claude-desktop-unofficial"):]
+    after_unofficial = body[unofficial_idx + len("claude-desktop-unofficial") :]
     assert "claude-desktop" in after_unofficial or "claude" in after_unofficial
 
 
@@ -300,3 +300,22 @@ def test_start_mcp_expand_path_produces_correct_absolute_paths(
     assert lines[0] == f"{home}/.x", f"~/... expansion failed: {lines[0]!r}"
     assert lines[1] == f"{home}/.x", f"$HOME/... expansion failed: {lines[1]!r}"
     assert lines[2] == "/abs/.x", f"/abs/... passthrough failed: {lines[2]!r}"
+
+
+# ── Claude Desktop diagnostics preflight ───────────────────────────────────
+
+
+def test_launcher_sh_has_desktop_doctor_preflight() -> None:
+    """Desktop mode runs `claude-desktop-unofficial --doctor` before launching.
+
+    The doctor surfaces feature blockers (e.g. cowork needing QEMU/firmware)
+    so the user can bail to CLI. The block is guarded by `command -v` so a
+    missing binary (or the stripped PATH used in CI) skips it cleanly, and a
+    negative reply rewrites the mode file back to cli.
+    """
+    text = _script_text()
+    assert "claude-desktop-unofficial --doctor" in text
+    # Guarded by command -v so headless/CI runs skip it cleanly.
+    assert "command -v claude-desktop-unofficial >/dev/null 2>&1" in text
+    # Opt-out rewrites MODE_FILE to cli so the main launcher falls back.
+    assert 'echo "cli" > "$MODE_FILE"' in text

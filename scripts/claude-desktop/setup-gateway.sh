@@ -60,27 +60,116 @@ set -uo pipefail
 REPO_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 
 # ---------------------------------------------------------------------------
-# Read ANTHROPIC_AUTH_TOKEN and PORT from ~/.fcc/.env (managed env path).
-# Use a small dotenv parser instead of `source` because the file may contain
-# unquoted values or comments.  Fall back to defaults.
+# Dotenv helpers — read KEY=VALUE from ~/.fcc/.env without `source`, since the
+# file may contain unquoted values or comments. Defined before first use so the
+# top-level env-reading below can reuse them.
+#   _env_val <key> [env_file]   -> value on stdout (empty if missing)
 # ---------------------------------------------------------------------------
 FCC_ENV="${HOME}/.fcc/.env"
+
+_env_val() {
+    local key="$1"
+    local file="${2:-$FCC_ENV}"
+    [ -f "$file" ] || return 0
+    grep -E "^${key}=" "$file" 2>/dev/null | tail -1 \
+        | sed -E "s/^${key}=//; s/^\"(.*)\"$/\1/; s/^'(.*)'$/\1/" || true
+}
+
+# Build a deduped, ordered JSON array of Anthropic-family model routes for
+# the Claude Desktop inferenceModels picker, from the chat model env vars
+# (MODEL, MODEL_OPUS, MODEL_SONNET, MODEL_HAIKU).
+#
+# The desktop's managed-settings validator rejects gateway model IDs that
+# don't reference an Anthropic model — it requires a bare "claude-*" id or a
+# "anthropic/claude-*" gateway route. A raw ref like
+# "anthropic/open_router/deepseek/deepseek-v4-flash" is rejected because the
+# path after "anthropic/" is not a claude-* model. So we emit Anthropic-family
+# routes instead of the raw provider/model refs.
+#
+# The gateway (fcc-server) routes these by family tier via
+# Settings.resolve_model(): a route whose name contains "opus"/"sonnet"/
+# "haiku" maps to MODEL_OPUS/MODEL_SONNET/MODEL_HAIKU, and any other name
+# falls back to MODEL. So:
+#   MODEL (default) -> "anthropic/claude-default"  (no tier substring -> default)
+#   MODEL_OPUS      -> "anthropic/claude-opus-4-20250514"
+#   MODEL_SONNET    -> "anthropic/claude-sonnet-4-20250514"
+#   MODEL_HAIKU     -> "anthropic/claude-haiku-4-20250514"
+# The opus/sonnet/haiku suffixes reuse real Anthropic model IDs (matching
+# SUPPORTED_CLAUDE_MODELS in api/model_catalog.py) so they route correctly
+# and are unambiguous. The date stamp in each id is hidden from the picker
+# via "labelOverride" (clean family names like "Claude Opus 4"); only the
+# "name" routes, so the backend is untouched. MODEL is emitted first because
+# the desktop treats the first inferenceModels entry as its default
+# selection. Entries pointing at the same underlying ref are deduped (first
+# wins) so the picker never shows two routes to the same model. Emits a
+# compact JSON array on stdout, or nothing if MODEL is absent/empty (the
+# caller then falls back to the proxy /v1/models fetch). Args: [env_file]
+_curated_models_json() {
+    local file="${1:-$FCC_ENV}"
+    local model opus sonnet haiku
+    model="$(_env_val MODEL "$file")"
+    opus="$(_env_val MODEL_OPUS "$file")"
+    sonnet="$(_env_val MODEL_SONNET "$file")"
+    haiku="$(_env_val MODEL_HAIKU "$file")"
+
+    # Without the default model the curated list is not meaningful.
+    [ -n "$model" ] || return 0
+
+    # Emit "<name>\t<label>\t<ref>" triples and dedup by the underlying ref
+    # ($3), so two tiers pointing at the same model only appear once (first
+    # wins). Each entry is an object: "name" is the routing id (unchanged —
+    # the gateway routes by the opus/sonnet/haiku substring in it) and
+    # "labelOverride" is the clean picker label that hides the date stamp.
+    {
+        printf 'anthropic/claude-default\tClaude Default\t%s\n' "$model"
+        [ -n "$opus" ]   && printf 'anthropic/claude-opus-4-20250514\tClaude Opus 4\t%s\n' "$opus"
+        [ -n "$sonnet" ] && printf 'anthropic/claude-sonnet-4-20250514\tClaude Sonnet 4\t%s\n' "$sonnet"
+        [ -n "$haiku" ]  && printf 'anthropic/claude-haiku-4-20250514\tClaude Haiku 4\t%s\n' "$haiku"
+    } | awk -F'\t' '!seen[$3]++' \
+      | jq -R -s -c '
+          split("\n") | map(select(length > 0)) | map(split("\t"))
+          | map({name: .[0], labelOverride: .[1]})
+        '
+}
+
+# Build a managedMcpServers JSON array mirroring the user-scoped MCP servers
+# configured for the Claude Code CLI (~/.claude.json top-level "mcpServers"),
+# converted to the desktop's managedMcpServers schema (an array of objects
+# with "name" + "transport" + connection fields). The 3P desktop reads MCP
+# servers from managedMcpServers in managed-settings.json — it does NOT pick
+# up ~/.claude.json mcpServers like the official app's Code tab does — so we
+# replicate them here to keep the CLI and desktop in sync. Drops entries
+# whose transport the desktop doesn't support (e.g. "ws"). Emits a compact
+# JSON array on stdout, or nothing if ~/.claude.json has no mcpServers.
+# Args: [claude_json_path]
+_managed_mcp_servers_json() {
+    local claude_json="${1:-$HOME/.claude.json}"
+    [ -f "$claude_json" ] || return 0
+    command -v jq >/dev/null 2>&1 || return 0
+    jq '
+      [ (.mcpServers // {}) | to_entries[] |
+        {
+          name: .key,
+          transport: (.value.type // "stdio"),
+          command: .value.command,
+          args: .value.args,
+          env: .value.env,
+          url: .value.url,
+          headers: .value.headers
+        }
+        | with_entries(select(.value != null))
+        | if .transport == "streamable-http" then .transport = "http" else . end
+        | select(.transport == "stdio" or .transport == "http" or .transport == "sse")
+      ]
+    ' "$claude_json" 2>/dev/null
+}
+
+# Defaults; overridden from ~/.fcc/.env below.
 AUTH_TOKEN="freecc"
 PORT="8082"
 
-if [ -f "$FCC_ENV" ]; then
-    # Extract KEY=VALUE lines, skip comments and blanks.
-    _val=""
-    _val="$(grep -E "^PORT=" "$FCC_ENV" 2>/dev/null | tail -1 | sed -E 's/^PORT=//; s/^"(.*)"$/\1/; s/^'\''(.*)'\''$/\1/' || true)"
-    if [ -n "$_val" ]; then
-        PORT="$_val"
-    fi
-    _val=""
-    _val="$(grep -E "^ANTHROPIC_AUTH_TOKEN=" "$FCC_ENV" 2>/dev/null | tail -1 | sed -E 's/^ANTHROPIC_AUTH_TOKEN=//; s/^"(.*)"$/\1/; s/^'\''(.*)'\''$/\1/' || true)"
-    if [ -n "$_val" ]; then
-        AUTH_TOKEN="$_val"
-    fi
-fi
+_val="$(_env_val PORT)";        [ -n "$_val" ] && PORT="$_val"
+_val="$(_env_val ANTHROPIC_AUTH_TOKEN)"; [ -n "$_val" ] && AUTH_TOKEN="$_val"
 
 BASE_URL="http://localhost:${PORT}"
 
@@ -91,25 +180,40 @@ BASE_URL="http://localhost:${PORT}"
 # default, with a network allowlist of only localhost + the inference
 # endpoint and the `dangerouslyDisableSandbox` escape hatch disabled by
 # policy.  When inference is routed through the local gateway that means
-# the sandbox blocks egress to any non-localhost host (github.com, npm
-# registries, etc.), so `git push`, `gh`, `curl`, and WebFetch all fail
-# with a host-not-allowed error.
+# the sandbox blocks egress to any non-localhost host, so `git push`,
+# `gh`, `curl`, `npm`, and WebFetch all fail with a host-not-allowed error.
 #
-# This gateway-managed setup is for a personal machine where the user
-# wants Claude Desktop to behave like the CLI — which runs with the
-# sandbox off and can reach any website.  Managed settings override
-# Desktop's default-on sandbox, so we set `sandbox.enabled: false` to
-# disable both filesystem and network isolation.  Bash commands then
-# get unrestricted filesystem and network access (gated only by the
-# user's permission mode), matching the CLI experience.
+# This gateway-managed setup keeps FILESYSTEM isolation on (so sandboxed
+# commands can only write to the project + temp dirs, plus the toolchain
+# caches listed below) while opening NETWORK egress to any host.  The
+# reason `allowedDomains` must be a catch-all rather than simply empty:
+# when a networked command's host is not on the allowlist, Claude Code
+# treats the command as "cannot be sandboxed" and falls back to running
+# it OUTSIDE the sandbox — which would also drop filesystem isolation
+# for that command.  Allowing all hosts keeps networked commands
+# sandboxed (filesystem stays restricted) while letting them reach any
+# website.
 #
-# If you would rather keep filesystem isolation and only open up network
-# egress, replace this with:
-#   {"enabled":true,"network":{"allowedDomains":["*"]}}
-# (allow all domains) — but note that `gh`/`git` credential helpers may
-# still need keyring/D-Bus access that a sandboxed process cannot reach.
+#   - filesystem.allowWrite: toolchain caches that live outside the
+#     project.  `uv run pytest` syncs deps into ~/.cache/uv and
+#     ~/.local/share/uv; npm/pnpm/yarn use ~/.npm / the pnpm store;
+#     Playwright/Puppeteer download browsers into ~/.cache.  Without
+#     these entries, dependency install and test runs fail under
+#     filesystem isolation.  Project-local dirs (.venv/, node_modules/,
+#     dist/, .pytest_cache/) are already writable (they're under the
+#     working directory).  Reads are unrestricted by default, so
+#     importing installed site-packages works wherever the venv lives.
+#   - network.allowedDomains: ["*"] — any website reachable, sandboxed.
+#   - excludedCommands: `git`/`gh` run OUTSIDE the sandbox so the
+#     credential helper can reach the keyring (D-Bus Unix socket) and
+#     SSH keys — the sandbox proxy cannot proxy D-Bus.  `git *` matches
+#     `git push origin main`; bare `git` covers no-args.
+#
+# Known caveat: `jest` with `watchman` is sandbox-incompatible (per
+# Claude Code docs) — use `jest --no-watchman`.  Add other toolchain
+# caches (e.g. ~/.cargo, ~/.gradle) to allowWrite as needed.
 # ---------------------------------------------------------------------------
-SANDBOX_JSON='{"enabled":false}'
+SANDBOX_JSON='{"enabled":true,"filesystem":{"allowWrite":["~/.cache/uv","~/.local/share/uv","~/.cache/pip","~/.npm","~/.local/share/pnpm","~/.pnpm-store","~/.cache/yarn","~/.yarn","~/.cache/ms-playwright","~/.cache/puppeteer"]},"network":{"allowedDomains":["*"]},"excludedCommands":["git","git *","gh","gh *"]}'
 
 # ---------------------------------------------------------------------------
 # Resolve the managed-settings directory based on platform / variant.
@@ -188,6 +292,10 @@ Notes:
   - In gateway mode the desktop app does not prompt for a claude.ai login.
     The gateway credential is used instead.  Chat/Cowork tabs requiring a
     claude.ai identity are unavailable.
+  - MCP servers configured for the Claude Code CLI in ~/.claude.json
+    (top-level "mcpServers") are mirrored into the desktop's
+    "managedMcpServers" so both surfaces see the same servers. Re-run
+    setup-gateway.sh after adding/removing CLI MCP servers to resync.
   - If you later enable "toolSearchEnabled" and see HTTP 400 errors, that
     is the gateway rejecting beta headers.  Leave tool search off.
   - Quit and reopen Claude Desktop for changes to take effect.
@@ -218,13 +326,29 @@ do_check() {
     if command -v jq >/dev/null 2>&1; then
         _stored=""
         _stored="$(jq -r '.inferenceGatewayBaseUrl // ""' "$MANAGED_FILE" 2>/dev/null || true)"
-        if [ "$_stored" = "$BASE_URL" ]; then
-            echo "wired: gateway=${BASE_URL}"
-            exit 0
-        else
+        if [ "$_stored" != "$BASE_URL" ]; then
             echo "not wired: inferenceGatewayBaseUrl='${_stored}' (expected '${BASE_URL}')"
             exit 1
         fi
+
+        # When a curated model list can be derived from the env, also verify
+        # inferenceModels matches it — a stale or absent list means the
+        # picker would fall back to auto-discovery (flooding it with the
+        # provider's full catalog). Re-run setup-gateway.sh to refresh.
+        _curated=""
+        _curated="$(_curated_models_json)"
+        if [ -n "$_curated" ]; then
+            _stored_models=""
+            _stored_models="$(jq -c '.inferenceModels // []' "$MANAGED_FILE" 2>/dev/null || echo "[]")"
+            if [ "$_stored_models" != "$_curated" ]; then
+                _count="$(printf '%s' "$_curated" | jq 'length')"
+                echo "not wired: inferenceModels stale (expected ${_count} curated models)"
+                exit 1
+            fi
+        fi
+
+        echo "wired: gateway=${BASE_URL}"
+        exit 0
     else
         # Fallback: grep for the base URL in the JSON.
         if grep -q "\"${BASE_URL}\"" "$MANAGED_FILE" 2>/dev/null; then
@@ -279,62 +403,72 @@ do_write() {
         exit 1
     fi
 
-    # Fetch model IDs from the proxy.  Use curl -sf so a connection failure
-    # returns non-zero; we handle that explicitly (do NOT let set -e kill us).
+    # Build the model list for the picker. Prefer a curated list derived from
+    # the chat model env vars (MODEL/MODEL_OPUS/MODEL_SONNET/MODEL_HAIKU):
+    # it works even when the proxy is down (the launcher runs this script
+    # before fcc-server starts) and keeps the picker to the few models the
+    # user actually configured instead of the provider's full catalog.
+    # Fall back to fetching /v1/models only when no MODEL var is set.
     MODELS_JSON=""
-    FETCH_OK=0
+    MODELS_SOURCE=""
 
-    _raw=""
-    if _raw="$(curl -sf -H "Authorization: Bearer ${AUTH_TOKEN}" \
-        "http://localhost:${PORT}/v1/models" 2>/dev/null)"; then
-        FETCH_OK=1
-    fi
-
-    if [ "$FETCH_OK" -eq 1 ]; then
-        # Validate and extract model IDs as a JSON array string.
-        MODELS_JSON="$(printf '%s' "$_raw" | jq -c '[.data[].id]')"
-        if [ -z "$MODELS_JSON" ] || [ "$MODELS_JSON" = "[]" ]; then
-            echo "Warning: proxy returned an empty model list."
-            MODELS_JSON=""
-        fi
+    _curated=""
+    _curated="$(_curated_models_json)"
+    if [ -n "$_curated" ] && [ "$_curated" != "[]" ]; then
+        MODELS_JSON="$_curated"
+        MODELS_SOURCE="curated"
     else
-        echo "Warning: proxy not reachable at http://localhost:${PORT}/v1/models." >&2
-        echo "         Writing managed settings WITHOUT inferenceModels." >&2
-        echo "         Re-run setup-gateway.sh once the server is up to populate" >&2
-        echo "         the full model list." >&2
+        # Proxy fetch fallback. Use curl -sf so a connection failure returns
+        # non-zero; we handle that explicitly (do NOT let set -e kill us).
+        _raw=""
+        if _raw="$(curl -sf -H "Authorization: Bearer ${AUTH_TOKEN}" \
+            "http://localhost:${PORT}/v1/models" 2>/dev/null)"; then
+            MODELS_JSON="$(printf '%s' "$_raw" | jq -c '[.data[].id]')"
+            if [ -z "$MODELS_JSON" ] || [ "$MODELS_JSON" = "[]" ]; then
+                echo "Warning: proxy returned an empty model list."
+                MODELS_JSON=""
+            else
+                MODELS_SOURCE="fetched"
+            fi
+        else
+            echo "Warning: proxy not reachable at http://localhost:${PORT}/v1/models." >&2
+            echo "         No MODEL env var set either — writing managed settings" >&2
+            echo "         WITHOUT inferenceModels. Set MODEL in ~/.fcc/.env or" >&2
+            echo "         re-run setup-gateway.sh once the server is up." >&2
+        fi
     fi
 
-    # Build the JSON object using jq -n to guarantee valid escaping.
+    # Mirror the CLI's user-scoped MCP servers (~/.claude.json mcpServers)
+    # into the desktop's managedMcpServers so the desktop sees the same MCP
+    # servers the CLI does.
+    MCP_JSON="$(_managed_mcp_servers_json)"
+
+    # Build the JSON object using jq -n to guarantee valid escaping. Start
+    # from the base gateway fields, then add inferenceModels and
+    # managedMcpServers only when non-empty.
+    SETTINGS_JSON="$(jq -n \
+        --arg url "$BASE_URL" \
+        --arg key "$AUTH_TOKEN" \
+        --argjson sandbox "$SANDBOX_JSON" \
+        '{
+            inferenceProvider: "gateway",
+            inferenceGatewayBaseUrl: $url,
+            inferenceGatewayApiKey: $key,
+            inferenceGatewayAuthScheme: "bearer",
+            inferenceCredentialKind: "static",
+            sandbox: $sandbox
+        }')"
+
     if [ -n "$MODELS_JSON" ]; then
         # Shellcheck: MODELS_JSON is a valid JSON array string from jq.
         # We pass it via --argjson so jq parses it as JSON, not a string.
-        SETTINGS_JSON="$(jq -n \
-            --arg url "$BASE_URL" \
-            --arg key "$AUTH_TOKEN" \
-            --argjson models "$MODELS_JSON" \
-            --argjson sandbox "$SANDBOX_JSON" \
-            '{
-                inferenceProvider: "gateway",
-                inferenceGatewayBaseUrl: $url,
-                inferenceGatewayApiKey: $key,
-                inferenceGatewayAuthScheme: "bearer",
-                inferenceCredentialKind: "static",
-                inferenceModels: $models,
-                sandbox: $sandbox
-            }')"
-    else
-        SETTINGS_JSON="$(jq -n \
-            --arg url "$BASE_URL" \
-            --arg key "$AUTH_TOKEN" \
-            --argjson sandbox "$SANDBOX_JSON" \
-            '{
-                inferenceProvider: "gateway",
-                inferenceGatewayBaseUrl: $url,
-                inferenceGatewayApiKey: $key,
-                inferenceGatewayAuthScheme: "bearer",
-                inferenceCredentialKind: "static",
-                sandbox: $sandbox
-            }')"
+        SETTINGS_JSON="$(printf '%s' "$SETTINGS_JSON" \
+            | jq --argjson models "$MODELS_JSON" '.inferenceModels = $models')"
+    fi
+
+    if [ -n "$MCP_JSON" ] && [ "$MCP_JSON" != "[]" ]; then
+        SETTINGS_JSON="$(printf '%s' "$SETTINGS_JSON" \
+            | jq --argjson mcp "$MCP_JSON" '.managedMcpServers = $mcp')"
     fi
 
     # Ensure the managed directory exists, root-owned, mode 0755.
@@ -355,12 +489,17 @@ do_write() {
     if [ -n "$MODELS_JSON" ]; then
         _count=""
         _count="$(printf '%s' "$MODELS_JSON" | jq 'length')"
-        echo "  Models fetched:   ${_count}"
+        echo "  Models (${MODELS_SOURCE}):  ${_count}"
     else
-        echo "  Models:           none (proxy was down — re-run to populate)"
+        echo "  Models:           none (no MODEL env var and proxy was down)"
+    fi
+    if [ -n "$MCP_JSON" ] && [ "$MCP_JSON" != "[]" ]; then
+        _mcp_count=""
+        _mcp_count="$(printf '%s' "$MCP_JSON" | jq 'length')"
+        echo "  MCP servers:      ${_mcp_count} (mirrored from ~/.claude.json)"
     fi
     echo "  Managed file:     ${MANAGED_FILE}"
-    echo "  Sandbox:          disabled (CLI-like unrestricted network)"
+    echo "  Sandbox:          fs isolated, network *, git/gh excluded"
     echo ""
     echo "In gateway mode the desktop app does not prompt for a claude.ai"
     echo "login — the gateway credential is used instead.  Chat/Cowork tabs"
