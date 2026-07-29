@@ -36,6 +36,14 @@ def retryable_upstream_status(exc: BaseException) -> int | None:
 
     ``429`` plus any upstream ``5xx`` use the same exponential backoff and scoped
     limiter blocking semantics as today's rate-limit path.
+
+    ``openai.APIConnectionError`` (including its ``APITimeoutError`` subclass)
+    covers connection-level failures — TCP resets, dropped connections, and read
+    timeouts — that some upstream providers (notably Cloudflare Workers AI on
+    free-tier or under load) surface instead of an HTTP 5xx when a generation
+    exceeds its per-request time budget or the edge drops the connection. These
+    are transient, so they retry with backoff under the 408 bucket rather than
+    surfacing immediately to the client.
     """
     if isinstance(exc, openai.RateLimitError):
         return 429
@@ -44,7 +52,9 @@ def retryable_upstream_status(exc: BaseException) -> int | None:
         if _upstream_http_retryable(status):
             return status
         return None
-    if isinstance(exc, openai.APITimeoutError):
+    if isinstance(exc, openai.APIConnectionError):
+        # APITimeoutError is a subclass; both are transient connection-level
+        # failures (timeout, reset, dropped connection) that should backoff-retry.
         return 408
     if isinstance(exc, openai.APIError):
         status = getattr(exc, "status_code", None)
@@ -284,11 +294,12 @@ class GlobalRateLimiter:
                 if status is None:
                     raise
 
-                label = (
-                    "Rate limited (429)"
-                    if status == 429
-                    else f"Upstream server error ({status})"
-                )
+                if status == 429:
+                    label = "Rate limited (429)"
+                elif isinstance(e, openai.APIConnectionError):
+                    label = "Upstream connection error"
+                else:
+                    label = f"Upstream server error ({status})"
                 last_exc = e
                 if attempt >= max_retries:
                     logger.warning(

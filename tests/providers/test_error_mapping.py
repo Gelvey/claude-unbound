@@ -244,6 +244,20 @@ def test_openai_api_timeout_error_maps_to_overloaded():
     assert mapped.status_code == 529
 
 
+def test_openai_api_connection_error_maps_to_overloaded():
+    """openai.APIConnectionError (non-timeout reset/drop) -> OverloadedError.
+
+    A plain APIConnectionError (TCP reset, dropped connection) is not an
+    APITimeoutError but is equally transient; it must map to OverloadedError so
+    the exhausted-retries message reads as retryable instead of a generic 500.
+    """
+    exc = openai.APIConnectionError(request=Request("POST", "http://test"))
+    assert not isinstance(exc, openai.APITimeoutError)
+    mapped = map_error(exc)
+    assert isinstance(mapped, OverloadedError)
+    assert mapped.status_code == 529
+
+
 def test_http_status_error_json_body_is_compact_and_visible():
     response = Response(
         status_code=400,
