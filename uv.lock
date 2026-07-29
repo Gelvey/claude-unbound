@@ -727,7 +727,7 @@ requires-dist = [
     { name = "aiohttp", specifier = ">=3.14.3" },
     { name = "discord-py", specifier = ">=2.7.1" },
     { name = "fastapi", extras = ["standard"], specifier = ">=0.136.3" },
-    { name = "graphifyy", extras = ["mcp"], marker = "extra == 'graphify'", specifier = ">=0.9.11" },
+    { name = "graphifyy", extras = ["mcp"], marker = "extra == 'graphify'", specifier = ">=0.9.29" },
     { name = "grpcio", marker = "extra == 'voice'", specifier = ">=1.83.0" },
     { name = "grpcio-tools", marker = "extra == 'voice'", specifier = ">=1.81.0" },
     { name = "httptools", specifier = ">=0.6" },
@@ -815,7 +815,7 @@ wheels = [
 
 [[package]]
 name = "graphifyy"
-version = "0.9.11"
+version = "0.9.29"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "networkx" },
@@ -848,9 +848,9 @@ dependencies = [
     { name = "tree-sitter-verilog" },
     { name = "tree-sitter-zig" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/2c/da/29400b3587221a601fc18aed33dcd7321d052a85ea0e4358df5695dd08bc/graphifyy-0.9.11.tar.gz", hash = "sha256:603623a208d0f6017800973cb812b412df4ec8e36ac6835fd60bfb60f2a683f0", size = 1376812, upload-time = "2026-07-09T00:28:13.851Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/69/54/b4e0dd99565f4cef3cbd85e002ddb1333407c97a6aa3bfe885ccfc1da55d/graphifyy-0.9.29.tar.gz", hash = "sha256:8410d178a4ba083993ada2410279a2601d4939ad4a494c04fd7c3fd3f3aff14b", size = 1654893, upload-time = "2026-07-28T09:53:22.313Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/fd/ce/9ab6889506189ad9892952c44450144ef92d95fae478606fdb05599c5af2/graphifyy-0.9.11-py3-none-any.whl", hash = "sha256:7bd089cdd0fc70758c05b1709738c35fd649af3f8a61b432a3c1b5045b11e720", size = 1069286, upload-time = "2026-07-09T00:28:08.538Z" },
+    { url = "https://files.pythonhosted.org/packages/f1/b1/0cbe4738ca9784850d40aae0d71c34547230e0445e52067f98b8d0b6c070/graphifyy-0.9.29-py3-none-any.whl", hash = "sha256:143f4002f40d5c302ae43bd58487ad604191f2d0ac8216429894c6a913ecf27b", size = 1201738, upload-time = "2026-07-28T09:53:20.454Z" },
 ]
 
 [package.optional-dependencies]
