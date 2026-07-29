@@ -226,3 +226,38 @@ def test_install_sh_defaults_dry_run_zero() -> None:
     """dry_run defaults to 0 (not dry-run mode)."""
     text = _script_text("install.sh")
     assert "dry_run=0" in text
+
+
+def test_install_sh_desktop_supports_macos() -> None:
+    """install.sh setup_claude_desktop supports macOS via brew cask."""
+    text = _script_text("install.sh")
+    body = _braced_body(text, "setup_claude_desktop()")
+    assert "Darwin" in body
+    assert "brew install --cask claude" in body
+    assert "/Applications/Claude.app" in body
+
+
+def test_install_sh_desktop_supports_ubuntu() -> None:
+    """install.sh setup_claude_desktop supports Ubuntu/Debian via .deb."""
+    text = _script_text("install.sh")
+    body = _braced_body(text, "setup_claude_desktop()")
+    assert "apt" in body or "dpkg" in body
+    assert "claude.ai/download" in body
+    assert "deb" in body
+
+
+def test_install_sh_desktop_supports_dnf() -> None:
+    """install.sh setup_claude_desktop still supports Fedora/RHEL via DNF."""
+    text = _script_text("install.sh")
+    body = _braced_body(text, "setup_claude_desktop()")
+    assert "dnf" in body
+    assert "claude-desktop-unofficial" in body
+    assert "claude-desktop-debian.dev" in body
+
+
+def test_install_sh_desktop_runs_setup_gateway() -> None:
+    """install.sh runs setup-gateway.sh after installing the desktop app."""
+    text = _script_text("install.sh")
+    body = _braced_body(text, "setup_claude_desktop()")
+    assert "setup-gateway.sh" in body
+    assert "--unwire" in body

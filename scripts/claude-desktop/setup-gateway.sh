@@ -1,12 +1,25 @@
 #!/bin/bash
 # ==============================================================================
-# setup-gateway.sh — Wire Claude Desktop (unofficial) into the Claude Unbound
-# proxy gateway via managed MDM settings.
+# setup-gateway.sh — Wire Claude Desktop into the Claude Unbound proxy gateway
+# via managed MDM settings.
+#
+# Supports three Claude Desktop variants:
+#
+#   1. macOS (official) — Anthropic's Claude.app, installed via `brew install
+#      --cask claude` or downloaded from claude.ai.  Managed settings path:
+#      /Library/Application Support/Claude/managed-settings.json
+#
+#   2. Linux (official beta) — Anthropic's Claude Desktop beta, packaged as a
+#      .deb for Ubuntu/Debian.  Managed settings path:
+#      /etc/claude/managed-settings.json
+#
+#   3. Linux (unofficial) — aaddrick/claude-desktop-debian, binary
+#      /usr/bin/claude-desktop-unofficial, StartupWMClass com.anthropic.Claude.
+#      Packaged as an RPM for Fedora/RHEL.  Managed settings path:
+#      /etc/claude-desktop/managed-settings.json
 #
 # What this does:
-#   Writes /etc/claude-desktop/managed-settings.json so the unofficial Claude
-#   Desktop app (https://github.com/aaddrick/claude-desktop-debian, binary
-#   /usr/bin/claude-desktop-unofficial, StartupWMClass com.anthropic.Claude)
+#   Writes the variant-appropriate managed-settings.json so the desktop app
 #   routes inference through the local fcc-server proxy instead of calling
 #   api.anthropic.com directly.  In gateway mode the desktop app does NOT
 #   prompt for a claude.ai login — the gateway credential is used instead.
@@ -17,6 +30,12 @@
 # (managed keys become read-only in the UI).  The file must be a regular file
 # (not a symlink), owned by root, and not group-/world-writable; the parent
 # directory /etc/claude-desktop must also be root-owned.
+#
+# Platform detection:
+#   macOS (Darwin)  -> /Library/Application Support/Claude/managed-settings.json
+#   Linux unofficial (claude-desktop-unofficial on PATH or existing
+#       /etc/claude/managed-settings.json) -> /etc/claude-desktop/managed-settings.json
+#   Linux official (default) -> /etc/claude/managed-settings.json
 #
 # Troubleshooting note:
 #   If you later flip "toolSearchEnabled" on in the desktop app and see
@@ -64,7 +83,75 @@ if [ -f "$FCC_ENV" ]; then
 fi
 
 BASE_URL="http://localhost:${PORT}"
-MANAGED_DIR="/etc/claude-desktop"
+
+# ---------------------------------------------------------------------------
+# Sandbox configuration written into managed settings.
+#
+# Claude Desktop runs Bash commands in a network/filesystem sandbox by
+# default, with a network allowlist of only localhost + the inference
+# endpoint and the `dangerouslyDisableSandbox` escape hatch disabled by
+# policy.  When inference is routed through the local gateway that means
+# the sandbox blocks egress to any non-localhost host (github.com, npm
+# registries, etc.), so `git push`, `gh`, `curl`, and WebFetch all fail
+# with a host-not-allowed error.
+#
+# This gateway-managed setup is for a personal machine where the user
+# wants Claude Desktop to behave like the CLI — which runs with the
+# sandbox off and can reach any website.  Managed settings override
+# Desktop's default-on sandbox, so we set `sandbox.enabled: false` to
+# disable both filesystem and network isolation.  Bash commands then
+# get unrestricted filesystem and network access (gated only by the
+# user's permission mode), matching the CLI experience.
+#
+# If you would rather keep filesystem isolation and only open up network
+# egress, replace this with:
+#   {"enabled":true,"network":{"allowedDomains":["*"]}}
+# (allow all domains) — but note that `gh`/`git` credential helpers may
+# still need keyring/D-Bus access that a sandboxed process cannot reach.
+# ---------------------------------------------------------------------------
+SANDBOX_JSON='{"enabled":false}'
+
+# ---------------------------------------------------------------------------
+# Resolve the managed-settings directory based on platform / variant.
+#   macOS (Darwin)         -> /Library/Application Support/Claude
+#   Linux unofficial        -> /etc/claude-desktop (backward compat)
+#   Linux official (default) -> /etc/claude
+#
+# Override: CLAUDE_DESKTOP_VARIANT=unofficial|official|macos
+# ---------------------------------------------------------------------------
+resolve_managed_dir() {
+    # Explicit override takes priority.
+    case "${CLAUDE_DESKTOP_VARIANT:-}" in
+        unofficial) printf '/etc/claude-desktop\n'; return 0 ;;
+        official)   printf '/etc/claude\n'; return 0 ;;
+        macos)      printf '/Library/Application Support/Claude\n'; return 0 ;;
+    esac
+
+    local os
+    os="$(uname -s)"
+
+    case "$os" in
+        Darwin)
+            printf '/Library/Application Support/Claude\n'
+            ;;
+        Linux)
+            # If the unofficial binary is on PATH or the legacy directory
+            # already exists, keep using it for backward compatibility.
+            if command -v claude-desktop-unofficial >/dev/null 2>&1 \
+                    || [ -d /etc/claude-desktop ]; then
+                printf '/etc/claude-desktop\n'
+            else
+                printf '/etc/claude\n'
+            fi
+            ;;
+        *)
+            # Unknown OS — default to the Linux official path.
+            printf '/etc/claude\n'
+            ;;
+    esac
+}
+
+MANAGED_DIR="$(resolve_managed_dir)"
 MANAGED_FILE="${MANAGED_DIR}/managed-settings.json"
 
 # ---------------------------------------------------------------------------
@@ -73,7 +160,12 @@ MANAGED_FILE="${MANAGED_DIR}/managed-settings.json"
 
 print_help() {
     cat <<EOF
-setup-gateway.sh — Wire Claude Desktop (unofficial) into the Claude Unbound proxy.
+setup-gateway.sh — Wire Claude Desktop into the Claude Unbound proxy.
+
+Supports three variants (auto-detected):
+  macOS (official)           /Library/Application Support/Claude/managed-settings.json
+  Linux (official beta)      /etc/claude/managed-settings.json
+  Linux (unofficial, Fedora)  /etc/claude-desktop/managed-settings.json
 
 Usage:
   setup-gateway.sh            Write or refresh the managed settings file
@@ -84,8 +176,13 @@ Usage:
   setup-gateway.sh --help     Show this help.
 
 Environment:
-  Reads ANTHROPIC_AUTH_TOKEN and PORT from ~/.fcc/.env
-  (falls back to "freecc" and "8082").
+  ANTHROPIC_AUTH_TOKEN        Proxy auth token (read from ~/.fcc/.env,
+                              falls back to "freecc").
+  PORT                        Proxy port (read from ~/.fcc/.env, "8082").
+  CLAUDE_DESKTOP_VARIANT      Override variant detection. Values:
+                                unofficial  -> /etc/claude-desktop/...
+                                official    -> /etc/claude/... (Linux)
+                                macos       -> /Library/Application Support/Claude/...
 
 Notes:
   - In gateway mode the desktop app does not prompt for a claude.ai login.
@@ -157,7 +254,7 @@ do_unwire() {
 
     $_priv rm -f "$MANAGED_FILE"
     echo "Removed ${MANAGED_FILE}."
-    echo "Claude Desktop reverts to default Anthropic login + editable 3P form."
+    echo "Claude Desktop reverts to default Anthropic login + editable settings form."
     echo "Quit and reopen Claude Desktop for changes to take effect."
     exit 0
 }
@@ -175,7 +272,7 @@ do_write() {
         exit 1
     fi
 
-    # Privilege elevation is required to write under /etc.
+    # Privilege elevation is required to write the managed settings file.
     _priv="$(priv_prefix)"
     if [ -z "$_priv" ]; then
         echo "Error: need sudo or pkexec to write under ${MANAGED_DIR}" >&2
@@ -215,24 +312,28 @@ do_write() {
             --arg url "$BASE_URL" \
             --arg key "$AUTH_TOKEN" \
             --argjson models "$MODELS_JSON" \
+            --argjson sandbox "$SANDBOX_JSON" \
             '{
                 inferenceProvider: "gateway",
                 inferenceGatewayBaseUrl: $url,
                 inferenceGatewayApiKey: $key,
                 inferenceGatewayAuthScheme: "bearer",
                 inferenceCredentialKind: "static",
-                inferenceModels: $models
+                inferenceModels: $models,
+                sandbox: $sandbox
             }')"
     else
         SETTINGS_JSON="$(jq -n \
             --arg url "$BASE_URL" \
             --arg key "$AUTH_TOKEN" \
+            --argjson sandbox "$SANDBOX_JSON" \
             '{
                 inferenceProvider: "gateway",
                 inferenceGatewayBaseUrl: $url,
                 inferenceGatewayApiKey: $key,
                 inferenceGatewayAuthScheme: "bearer",
-                inferenceCredentialKind: "static"
+                inferenceCredentialKind: "static",
+                sandbox: $sandbox
             }')"
     fi
 
@@ -249,7 +350,7 @@ do_write() {
     rm -f "$_tmpfile"
 
     # Summary.
-    echo "Gateway wired for Claude Desktop (unofficial)."
+    echo "Gateway wired for Claude Desktop (${MANAGED_DIR})."
     echo "  Base URL:         ${BASE_URL}"
     if [ -n "$MODELS_JSON" ]; then
         _count=""
@@ -259,6 +360,7 @@ do_write() {
         echo "  Models:           none (proxy was down — re-run to populate)"
     fi
     echo "  Managed file:     ${MANAGED_FILE}"
+    echo "  Sandbox:          disabled (CLI-like unrestricted network)"
     echo ""
     echo "In gateway mode the desktop app does not prompt for a claude.ai"
     echo "login — the gateway credential is used instead.  Chat/Cowork tabs"

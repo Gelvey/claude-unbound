@@ -525,27 +525,75 @@ print_mcp_dependency_guidance() {
     fi
 }
 
-# Offer to install the unofficial Claude Desktop app and wire it into the
-# proxy so inference routes through the gateway with no Anthropic login
-# (the desktop equivalent of the CLI's env-var injection). DNF
-# (Fedora/RHEL) only — the unofficial build is packaged as an RPM.
+# Offer to install Claude Desktop and wire it into the proxy so inference
+# routes through the gateway with no Anthropic login (the desktop equivalent
+# of the CLI's env-var injection).
+#
+# Platform support:
+#   macOS (Darwin)    — official Claude.app via `brew install --cask claude`
+#   Ubuntu/Debian     — official beta via .deb download from claude.ai
+#   Fedora/RHEL (DNF) — unofficial build via RPM from pkg.claude-desktop-debian.dev
+#
 # Non-interactive installs (e.g. `curl | sh`, stdin not a TTY) skip silently.
 setup_claude_desktop() {
-    if ! command -v dnf >/dev/null 2>&1; then
-        printf '\nClaude Desktop wiring: skipped (DNF/Fedora/RHEL only).\n'
-        printf '  The unofficial Claude Desktop build is packaged as an RPM.\n'
-        printf '  On other platforms, install the app manually then run:\n'
-        printf '    bash %s/scripts/claude-desktop/setup-gateway.sh\n' "$REPO_DIR"
-        return 0
-    fi
+    local os desktop_binary desktop_found
+
+    os="$(uname -s)"
+
+    # Determine the platform and the expected desktop binary.
+    case "$os" in
+        Darwin)
+            desktop_binary="claude"
+            desktop_found=0
+            # On macOS the brew cask installs /Applications/Claude.app.
+            # Check the .app bundle first, then PATH.
+            if [ -d "/Applications/Claude.app" ] \
+                    || command -v claude >/dev/null 2>&1; then
+                desktop_found=1
+            fi
+            ;;
+        Linux)
+            # Check for either the unofficial or official binary.
+            if command -v claude-desktop-unofficial >/dev/null 2>&1; then
+                desktop_binary="claude-desktop-unofficial"
+                desktop_found=1
+            elif command -v claude-desktop >/dev/null 2>&1; then
+                desktop_binary="claude-desktop"
+                desktop_found=1
+            elif command -v claude >/dev/null 2>&1; then
+                desktop_binary="claude"
+                desktop_found=1
+            else
+                desktop_binary=""
+                desktop_found=0
+            fi
+            ;;
+        *)
+            printf '\nClaude Desktop wiring: skipped (unsupported OS: %s).\n' "$os"
+            printf '  Install the app manually then run:\n'
+            printf '    bash %s/scripts/claude-desktop/setup-gateway.sh\n' "$REPO_DIR"
+            return 0
+            ;;
+    esac
 
     # Skip silently in non-interactive contexts (stdin is not a TTY).
     [ -t 0 ] || return 0
 
     printf '\n'
-    printf 'Claude Desktop (unofficial Linux build) can be wired to route\n'
-    printf '  inference through this proxy with no Anthropic login.\n'
-    printf '  Repo: https://github.com/aaddrick/claude-desktop-debian\n'
+    printf 'Claude Desktop can be wired to route inference through this\n'
+    printf '  proxy with no Anthropic login.\n'
+    case "$os" in
+        Darwin)
+            printf '  Platform: macOS (official Claude.app)\n'
+            ;;
+        Linux)
+            if [ "$desktop_binary" = "claude-desktop-unofficial" ]; then
+                printf '  Platform: Linux (unofficial, aaddrick/claude-desktop-debian)\n'
+            else
+                printf '  Platform: Linux (official beta)\n'
+            fi
+            ;;
+    esac
     printf '  Install and wire Claude Desktop now? [y/N] '
     read -r reply || reply=''
     printf '\n'
@@ -557,23 +605,72 @@ setup_claude_desktop() {
             ;;
     esac
 
-    # Install the unofficial desktop app via DNF if not already present.
-    if command -v claude-desktop-unofficial >/dev/null 2>&1; then
-        printf 'Claude Desktop (unofficial) already installed; skipping install.\n'
+    # Install the desktop app if not already present.
+    if [ "$desktop_found" -eq 1 ]; then
+        printf 'Claude Desktop already installed; skipping install.\n'
     else
-        run sudo curl -fsSL https://pkg.claude-desktop-debian.dev/rpm/claude-desktop-unofficial.repo -o /etc/yum.repos.d/claude-desktop-unofficial.repo || {
-            printf 'WARNING: failed to add the claude-desktop-unofficial DNF repo; skipping wiring.\n'
-            return 0
-        }
-        run sudo dnf install -y claude-desktop-unofficial || {
-            printf 'WARNING: dnf install claude-desktop-unofficial failed; skipping wiring.\n'
-            return 0
-        }
+        case "$os" in
+            Darwin)
+                if ! command -v brew >/dev/null 2>&1; then
+                    printf 'WARNING: Homebrew is not installed; cannot auto-install Claude Desktop.\n'
+                    printf '  Install Homebrew from https://brew.sh, then:\n'
+                    printf '    brew install --cask claude\n'
+                    printf '  Or download from https://claude.ai/download\n'
+                    printf '  Then re-run this installer or:\n'
+                    printf '    bash %s/scripts/claude-desktop/setup-gateway.sh\n' "$REPO_DIR"
+                    return 0
+                fi
+                run brew install --cask claude || {
+                    printf 'WARNING: brew install --cask claude failed; skipping wiring.\n'
+                    printf '  Download from https://claude.ai/download instead.\n'
+                    return 0
+                }
+                ;;
+            Linux)
+                if command -v dnf >/dev/null 2>&1; then
+                    # Fedora/RHEL: unofficial build via DNF/RPM.
+                    run sudo curl -fsSL https://pkg.claude-desktop-debian.dev/rpm/claude-desktop-unofficial.repo \
+                        -o /etc/yum.repos.d/claude-desktop-unofficial.repo || {
+                        printf 'WARNING: failed to add the claude-desktop-unofficial DNF repo; skipping wiring.\n'
+                        return 0
+                    }
+                    run sudo dnf install -y claude-desktop-unofficial || {
+                        printf 'WARNING: dnf install claude-desktop-unofficial failed; skipping wiring.\n'
+                        return 0
+                    }
+                elif command -v apt >/dev/null 2>&1 || command -v dpkg >/dev/null 2>&1; then
+                    # Ubuntu/Debian: official beta .deb download.
+                    local deb_arch deb_url tmpdir deb_file
+                    deb_arch="$(dpkg --print-architecture 2>/dev/null || printf 'amd64')"
+                    deb_url="https://claude.ai/download/${deb_arch}/deb"
+                    tmpdir="$(mktemp -d)"
+                    deb_file="${tmpdir}/claude-desktop.deb"
+
+                    printf 'Downloading Claude Desktop beta (.deb)...\n'
+                    run sh -c "curl -fsSL -o '${deb_file}' '${deb_url}'" || {
+                        printf 'WARNING: failed to download Claude Desktop .deb from %s\n' "$deb_url"
+                        printf '  Download manually from https://claude.ai/download\n'
+                        rm -rf "$tmpdir"
+                        return 0
+                    }
+                    run sudo dpkg -i "$deb_file" || {
+                        printf 'WARNING: dpkg install failed; attempting apt --fix-broken...\n'
+                        run sudo apt-get install -f -y || true
+                    }
+                    rm -rf "$tmpdir"
+                else
+                    printf 'WARNING: no supported package manager found (dnf, apt, or dpkg).\n'
+                    printf '  Download Claude Desktop from https://claude.ai/download\n'
+                    printf '  Then run: bash %s/scripts/claude-desktop/setup-gateway.sh\n' "$REPO_DIR"
+                    return 0
+                fi
+                ;;
+        esac
     fi
 
-    # Wire the gateway (writes /etc/claude-desktop/managed-settings.json via
-    # sudo). The proxy is not running during install, so the model list may
-    # be empty — re-run setup-gateway.sh after starting fcc-server to
+    # Wire the gateway (writes the platform-appropriate managed-settings.json
+    # via sudo). The proxy is not running during install, so the model list
+    # may be empty — re-run setup-gateway.sh after starting fcc-server to
     # populate inferenceModels.
     if [ -f "$REPO_DIR/scripts/claude-desktop/setup-gateway.sh" ]; then
         run bash "$REPO_DIR/scripts/claude-desktop/setup-gateway.sh" \
