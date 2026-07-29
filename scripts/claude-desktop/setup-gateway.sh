@@ -91,25 +91,40 @@ BASE_URL="http://localhost:${PORT}"
 # default, with a network allowlist of only localhost + the inference
 # endpoint and the `dangerouslyDisableSandbox` escape hatch disabled by
 # policy.  When inference is routed through the local gateway that means
-# the sandbox blocks egress to any non-localhost host (github.com, npm
-# registries, etc.), so `git push`, `gh`, `curl`, and WebFetch all fail
-# with a host-not-allowed error.
+# the sandbox blocks egress to any non-localhost host, so `git push`,
+# `gh`, `curl`, `npm`, and WebFetch all fail with a host-not-allowed error.
 #
-# This gateway-managed setup is for a personal machine where the user
-# wants Claude Desktop to behave like the CLI — which runs with the
-# sandbox off and can reach any website.  Managed settings override
-# Desktop's default-on sandbox, so we set `sandbox.enabled: false` to
-# disable both filesystem and network isolation.  Bash commands then
-# get unrestricted filesystem and network access (gated only by the
-# user's permission mode), matching the CLI experience.
+# This gateway-managed setup keeps FILESYSTEM isolation on (so sandboxed
+# commands can only write to the project + temp dirs, plus the toolchain
+# caches listed below) while opening NETWORK egress to any host.  The
+# reason `allowedDomains` must be a catch-all rather than simply empty:
+# when a networked command's host is not on the allowlist, Claude Code
+# treats the command as "cannot be sandboxed" and falls back to running
+# it OUTSIDE the sandbox — which would also drop filesystem isolation
+# for that command.  Allowing all hosts keeps networked commands
+# sandboxed (filesystem stays restricted) while letting them reach any
+# website.
 #
-# If you would rather keep filesystem isolation and only open up network
-# egress, replace this with:
-#   {"enabled":true,"network":{"allowedDomains":["*"]}}
-# (allow all domains) — but note that `gh`/`git` credential helpers may
-# still need keyring/D-Bus access that a sandboxed process cannot reach.
+#   - filesystem.allowWrite: toolchain caches that live outside the
+#     project.  `uv run pytest` syncs deps into ~/.cache/uv and
+#     ~/.local/share/uv; npm/pnpm/yarn use ~/.npm / the pnpm store;
+#     Playwright/Puppeteer download browsers into ~/.cache.  Without
+#     these entries, dependency install and test runs fail under
+#     filesystem isolation.  Project-local dirs (.venv/, node_modules/,
+#     dist/, .pytest_cache/) are already writable (they're under the
+#     working directory).  Reads are unrestricted by default, so
+#     importing installed site-packages works wherever the venv lives.
+#   - network.allowedDomains: ["*"] — any website reachable, sandboxed.
+#   - excludedCommands: `git`/`gh` run OUTSIDE the sandbox so the
+#     credential helper can reach the keyring (D-Bus Unix socket) and
+#     SSH keys — the sandbox proxy cannot proxy D-Bus.  `git *` matches
+#     `git push origin main`; bare `git` covers no-args.
+#
+# Known caveat: `jest` with `watchman` is sandbox-incompatible (per
+# Claude Code docs) — use `jest --no-watchman`.  Add other toolchain
+# caches (e.g. ~/.cargo, ~/.gradle) to allowWrite as needed.
 # ---------------------------------------------------------------------------
-SANDBOX_JSON='{"enabled":false}'
+SANDBOX_JSON='{"enabled":true,"filesystem":{"allowWrite":["~/.cache/uv","~/.local/share/uv","~/.cache/pip","~/.npm","~/.local/share/pnpm","~/.pnpm-store","~/.cache/yarn","~/.yarn","~/.cache/ms-playwright","~/.cache/puppeteer"]},"network":{"allowedDomains":["*"]},"excludedCommands":["git","git *","gh","gh *"]}'
 
 # ---------------------------------------------------------------------------
 # Resolve the managed-settings directory based on platform / variant.
@@ -360,7 +375,7 @@ do_write() {
         echo "  Models:           none (proxy was down — re-run to populate)"
     fi
     echo "  Managed file:     ${MANAGED_FILE}"
-    echo "  Sandbox:          disabled (CLI-like unrestricted network)"
+    echo "  Sandbox:          fs isolated, network *, git/gh excluded"
     echo ""
     echo "In gateway mode the desktop app does not prompt for a claude.ai"
     echo "login — the gateway credential is used instead.  Chat/Cowork tabs"

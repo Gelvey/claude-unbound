@@ -97,17 +97,53 @@ def _extract_sandbox_json(text: str) -> str:
     return text[start:end]
 
 
-def test_setup_gateway_disables_sandbox() -> None:
-    """setup-gateway.sh disables the sandbox for CLI-like unrestricted access."""
+def test_setup_gateway_keeps_filesystem_isolation() -> None:
+    """setup-gateway.sh keeps filesystem isolation on (sandbox enabled)."""
     text = _script_text()
     sandbox = __import__("json").loads(_extract_sandbox_json(text))
-    # Managed settings override Desktop's default-on sandbox.  Disabling it
-    # gives unrestricted filesystem + network egress (any website reachable),
-    # matching the CLI experience the user wants from a gateway-managed setup.
-    assert sandbox["enabled"] is False
-    # No network allowlist or excludedCommands — nothing is sandboxed.
-    assert "network" not in sandbox
-    assert "excludedCommands" not in sandbox
+    assert sandbox["enabled"] is True
+    # Filesystem layer stays on — no `filesystem.disabled` escape.
+    assert sandbox.get("filesystem", {}).get("disabled") is not True
+
+
+def test_setup_gateway_allows_all_network() -> None:
+    """setup-gateway.sh opens network egress to any host while sandboxed."""
+    text = _script_text()
+    sandbox = __import__("json").loads(_extract_sandbox_json(text))
+    # Catch-all so networked commands stay sandboxed (filesystem stays
+    # restricted) instead of falling back to unsandboxed execution.
+    assert sandbox["network"]["allowedDomains"] == ["*"]
+
+
+def test_setup_gateway_allows_toolchain_caches_write() -> None:
+    """setup-gateway.sh permits writes to uv/npm/pnpm/playwright caches."""
+    text = _script_text()
+    sandbox = __import__("json").loads(_extract_sandbox_json(text))
+    allow = sandbox["filesystem"]["allowWrite"]
+    # Python (uv/pip) and Node (npm/pnpm/yarn) + browser e2e caches must be
+    # writable so dep install and test runs work under filesystem isolation.
+    for path in (
+        "~/.cache/uv",
+        "~/.local/share/uv",
+        "~/.cache/pip",
+        "~/.npm",
+        "~/.local/share/pnpm",
+        "~/.pnpm-store",
+        "~/.cache/ms-playwright",
+    ):
+        assert path in allow, f"missing allowWrite entry: {path}"
+
+
+def test_setup_gateway_excludes_git_and_gh() -> None:
+    """git/gh run outside the sandbox so credential helpers/keyring work."""
+    text = _script_text()
+    sandbox = __import__("json").loads(_extract_sandbox_json(text))
+    excluded = sandbox["excludedCommands"]
+    # `git *` matches `git push origin main`; bare `git` covers no-args.
+    assert "git" in excluded
+    assert "git *" in excluded
+    assert "gh" in excluded
+    assert "gh *" in excluded
 
 
 def test_setup_gateway_emits_sandbox_into_managed_json() -> None:
