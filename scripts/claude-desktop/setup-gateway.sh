@@ -97,7 +97,7 @@ _env_val() {
 # The opus/sonnet/haiku suffixes reuse real Anthropic model IDs (matching
 # SUPPORTED_CLAUDE_MODELS in api/model_catalog.py) so they route correctly
 # and are unambiguous. The date stamp in each id is hidden from the picker
-# via "labelOverride" (clean family names like "Claude Opus 4"); only the
+# via "labelOverride" (clean "Claude Unbound" family names); only the
 # "name" routes, so the backend is untouched. MODEL is emitted first because
 # the desktop treats the first inferenceModels entry as its default
 # selection. Entries pointing at the same underlying ref are deduped (first
@@ -122,10 +122,10 @@ _curated_models_json() {
     # the gateway routes by the opus/sonnet/haiku substring in it) and
     # "labelOverride" is the clean picker label that hides the date stamp.
     {
-        printf 'anthropic/claude-default\tClaude Default\t%s\n' "$model"
-        [ -n "$opus" ]   && printf 'anthropic/claude-opus-4-20250514\tClaude Opus 4\t%s\n' "$opus"
-        [ -n "$sonnet" ] && printf 'anthropic/claude-sonnet-4-20250514\tClaude Sonnet 4\t%s\n' "$sonnet"
-        [ -n "$haiku" ]  && printf 'anthropic/claude-haiku-4-20250514\tClaude Haiku 4\t%s\n' "$haiku"
+        printf 'anthropic/claude-default\tClaude Unbound Default\t%s\n' "$model"
+        [ -n "$opus" ]   && printf 'anthropic/claude-opus-4-20250514\tClaude Opus Unbound\t%s\n' "$opus"
+        [ -n "$sonnet" ] && printf 'anthropic/claude-sonnet-4-20250514\tClaude Sonnet Unbound\t%s\n' "$sonnet"
+        [ -n "$haiku" ]  && printf 'anthropic/claude-haiku-4-20250514\tClaude Haiku Unbound\t%s\n' "$haiku"
     } | awk -F'\t' '!seen[$3]++' \
       | jq -R -s -c '
           split("\n") | map(select(length > 0)) | map(split("\t"))

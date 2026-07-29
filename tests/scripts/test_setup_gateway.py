@@ -220,8 +220,11 @@ def test_curated_models_json_builds_gateway_ids(tmp_path: Path) -> None:
     # MODEL_HAIKU shares MODEL's ref -> deduped out. labelOverride hides the
     # date stamp; name (routing) is the full id.
     assert ids == [
-        {"name": "anthropic/claude-default", "labelOverride": "Claude Default"},
-        {"name": "anthropic/claude-opus-4-20250514", "labelOverride": "Claude Opus 4"},
+        {"name": "anthropic/claude-default", "labelOverride": "Claude Unbound Default"},
+        {
+            "name": "anthropic/claude-opus-4-20250514",
+            "labelOverride": "Claude Opus Unbound",
+        },
     ]
 
 
@@ -247,15 +250,18 @@ def test_curated_models_json_all_tiers(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     ids = json.loads(result.stdout.strip())
     assert ids == [
-        {"name": "anthropic/claude-default", "labelOverride": "Claude Default"},
-        {"name": "anthropic/claude-opus-4-20250514", "labelOverride": "Claude Opus 4"},
+        {"name": "anthropic/claude-default", "labelOverride": "Claude Unbound Default"},
+        {
+            "name": "anthropic/claude-opus-4-20250514",
+            "labelOverride": "Claude Opus Unbound",
+        },
         {
             "name": "anthropic/claude-sonnet-4-20250514",
-            "labelOverride": "Claude Sonnet 4",
+            "labelOverride": "Claude Sonnet Unbound",
         },
         {
             "name": "anthropic/claude-haiku-4-20250514",
-            "labelOverride": "Claude Haiku 4",
+            "labelOverride": "Claude Haiku Unbound",
         },
     ]
 
