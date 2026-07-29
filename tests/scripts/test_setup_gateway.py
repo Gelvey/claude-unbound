@@ -261,7 +261,7 @@ def test_curated_models_json_all_tiers(tmp_path: Path) -> None:
 
 
 def test_curated_models_json_empty_without_model(tmp_path: Path) -> None:
-    """No MODEL var -> empty output (caller falls back to proxy fetch)."""
+    """No MODEL var -> empty output (caller omits inferenceModels)."""
     env_file = tmp_path / ".env"
     env_file.write_text("MODEL_OPUS=cloudflare_ai/x/y\nPORT=9999\n", encoding="utf-8")
     wrapper = tmp_path / "run.sh"
@@ -278,6 +278,146 @@ def test_curated_models_json_empty_without_model(tmp_path: Path) -> None:
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "result=[]"
+
+
+def test_no_proxy_fetch_fallback_for_inference_models() -> None:
+    """The install path must not fall back to fetching the proxy catalog for
+    inferenceModels.
+
+    The desktop's managed-settings validator requires every inferenceModels
+    entry to be an Anthropic-family route ("claude-*" or "anthropic/claude-*").
+    The proxy catalog returns raw provider refs (e.g.
+    "anthropic/open_router/deepseek/deepseek-v4-flash") that the validator
+    rejects, leaving the desktop in an invalid_config state. So when no MODEL
+    env var is set the script must omit inferenceModels entirely rather than
+    emit raw refs from a proxy fetch. This test is a regression guard against
+    re-adding the fetch fallback: it checks the do_install function body (the
+    code that builds MODELS_JSON) and the MODELS_SOURCE assignments in it.
+    """
+    text = _script_text()
+    install_body = _extract_func(text, "do_write() {")
+    # No curl fetch of the proxy model catalog in the install path.
+    assert "curl -sf" not in install_body, (
+        "do_install must not curl the proxy catalog: raw provider refs are "
+        "rejected by the desktop validator"
+    )
+    assert 'MODELS_SOURCE="fetched"' not in install_body, (
+        "do_install must not set MODELS_SOURCE=fetched: the proxy-fetch "
+        "fallback was removed to prevent invalid configs"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Ownership grant (launcher refreshes managed settings without root)
+# ---------------------------------------------------------------------------
+def test_can_write_managed_helper_exists() -> None:
+    """_can_write_managed and _grant_ownership helpers are present so the
+    launcher can refresh managed settings unprivileged after a one-time
+    `sudo setup-gateway.sh` ownership grant.
+    """
+    text = _script_text()
+    assert "_can_write_managed() {" in text, (
+        "setup-gateway.sh must define _can_write_managed so do_write can "
+        "skip elevation when the managed dir is already user-writable"
+    )
+    assert "_grant_ownership() {" in text, (
+        "setup-gateway.sh must define _grant_ownership so a sudo run "
+        "transfers ownership of the managed dir to the invoking user"
+    )
+
+
+def test_do_write_uses_privilege_detection() -> None:
+    """do_write only elevates when _can_write_managed fails, and grants
+    ownership to SUDO_USER when elevated — so the first `sudo` run enables
+    all later unprivileged launcher refreshes.
+    """
+    text = _script_text()
+    body = _extract_func(text, "do_write() {")
+    assert "_can_write_managed" in body, (
+        "do_write must call _can_write_managed to detect an already-granted dir"
+    )
+    # The grant is invoked from do_write so an elevated run hands ownership
+    # to the invoking user.
+    assert "_grant_ownership" in body
+    # When not elevated, the file is installed WITHOUT -o root -g root (those
+    # require root and would defeat the unprivileged refresh path).
+    assert 'install -m 0644 "$_tmpfile" "$MANAGED_FILE"' in body, (
+        "do_write must install the file unprivileged (no -o root) when "
+        "_can_write_managed succeeds, so the launcher can refresh it"
+    )
+
+
+def test_do_unwire_uses_privilege_detection() -> None:
+    """do_unwire only elevates when the managed dir is not writable by us,
+    so unwiring works unprivileged after the ownership grant.
+    """
+    text = _script_text()
+    body = _extract_func(text, "do_unwire() {")
+    assert '"$MANAGED_DIR"' in body and "priv_prefix" in body
+    # It checks dir writability before elevating (removing needs write on the
+    # dir, not the file).
+    assert '[ ! -w "$MANAGED_DIR" ]' in body, (
+        "do_unwire must check the managed dir is writable before elevating"
+    )
+
+
+def test_can_write_managed_file_writable(tmp_path: Path) -> None:
+    """_can_write_managed returns 0 (success) when the managed file exists
+    and is writable by us — the post-grant state the launcher relies on.
+    """
+    managed_dir = tmp_path / "claude-desktop"
+    managed_dir.mkdir()
+    managed_file = managed_dir / "managed-settings.json"
+    managed_file.write_text("{}", encoding="utf-8")
+    managed_file.chmod(0o644)
+    wrapper = tmp_path / "run.sh"
+    wrapper.write_text(
+        _extract_func(_script_text(), "_can_write_managed() {")
+        + f'\nMANAGED_DIR="{managed_dir}"\nMANAGED_FILE="{managed_file}"\n'
+        "_can_write_managed && echo WRITABLE || echo NOT_WRITABLE\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        ["bash", str(wrapper)], capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "WRITABLE", (
+        f"_can_write_managed should succeed for a user-writable file; "
+        f"got: {result.stdout!r} stderr={result.stderr!r}"
+    )
+
+
+def test_can_write_managed_root_owned_file_not_writable(tmp_path: Path) -> None:
+    """_can_write_managed returns non-zero when the file exists but is not
+    writable by us (e.g. root-owned 0644) — the pre-grant state that should
+    trigger elevation.
+    """
+    managed_dir = tmp_path / "claude-desktop"
+    managed_dir.mkdir()
+    managed_file = managed_dir / "managed-settings.json"
+    managed_file.write_text("{}", encoding="utf-8")
+    # 0444 = read-only for everyone; not writable by the unprivileged user.
+    managed_file.chmod(0o444)
+    wrapper = tmp_path / "run.sh"
+    wrapper.write_text(
+        _extract_func(_script_text(), "_can_write_managed() {")
+        + f'\nMANAGED_DIR="{managed_dir}"\nMANAGED_FILE="{managed_file}"\n'
+        # Run as the current (non-root) user; if we ARE root in CI, skip the
+        # writability assertion since root bypasses file perms.
+        'if [ "$(id -u)" -eq 0 ]; then echo SKIP_ROOT; '
+        "else _can_write_managed && echo WRITABLE || echo NOT_WRITABLE; fi\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        ["bash", str(wrapper)], capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 0, result.stderr
+    out = result.stdout.strip()
+    if out == "SKIP_ROOT":
+        return  # running as root in CI — root bypasses perms, nothing to assert
+    assert out == "NOT_WRITABLE", (
+        f"_can_write_managed should fail for a read-only file; got {out!r}"
+    )
 
 
 # ---------------------------------------------------------------------------
