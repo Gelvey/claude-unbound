@@ -308,115 +308,47 @@ def test_no_proxy_fetch_fallback_for_inference_models() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Ownership grant (launcher refreshes managed settings without root)
+# Root ownership of the managed-settings file (trust requirement)
 # ---------------------------------------------------------------------------
-def test_can_write_managed_helper_exists() -> None:
-    """_can_write_managed and _grant_ownership helpers are present so the
-    launcher can refresh managed settings unprivileged after a one-time
-    `sudo setup-gateway.sh` ownership grant.
-    """
-    text = _script_text()
-    assert "_can_write_managed() {" in text, (
-        "setup-gateway.sh must define _can_write_managed so do_write can "
-        "skip elevation when the managed dir is already user-writable"
-    )
-    assert "_grant_ownership() {" in text, (
-        "setup-gateway.sh must define _grant_ownership so a sudo run "
-        "transfers ownership of the managed dir to the invoking user"
-    )
+def test_managed_file_installed_root_owned() -> None:
+    """do_write installs the managed file root-owned and never chowns it to a
+    non-root user.
 
-
-def test_do_write_uses_privilege_detection() -> None:
-    """do_write only elevates when _can_write_managed fails, and grants
-    ownership to SUDO_USER when elevated — so the first `sudo` run enables
-    all later unprivileged launcher refreshes.
+    The Claude Desktop trust check rejects a managed-settings.json that is
+    not owned by root (logging "must be owned by root and not group- or
+    world-writable") and falls back to the default claude.ai login. A prior
+    change added an ownership grant that chowned the managed dir to the
+    invoking user for "rootless refresh"; that broke the trust check, so the
+    desktop prompted for an Anthropic login. This test is a regression guard:
+    the install path must always install the file root-owned, and the
+    ownership-grant helpers (_can_write_managed / _grant_ownership) must not
+    exist.
     """
     text = _script_text()
     body = _extract_func(text, "do_write() {")
-    assert "_can_write_managed" in body, (
-        "do_write must call _can_write_managed to detect an already-granted dir"
+    # The file is installed root-owned, unconditionally.
+    assert 'install -m 0644 -o root -g root "$_tmpfile" "$MANAGED_FILE"' in body, (
+        "do_write must install managed-settings.json root-owned: the desktop "
+        "trust check rejects a user-owned file and falls back to claude.ai login"
     )
-    # The grant is invoked from do_write so an elevated run hands ownership
-    # to the invoking user.
-    assert "_grant_ownership" in body
-    # When not elevated, the file is installed WITHOUT -o root -g root (those
-    # require root and would defeat the unprivileged refresh path).
-    assert 'install -m 0644 "$_tmpfile" "$MANAGED_FILE"' in body, (
-        "do_write must install the file unprivileged (no -o root) when "
-        "_can_write_managed succeeds, so the launcher can refresh it"
+    # The dir is created root-owned.
+    assert 'install -d -m 0755 -o root -g root "$MANAGED_DIR"' in body, (
+        "do_write must create the managed dir root-owned"
     )
-
-
-def test_do_unwire_uses_privilege_detection() -> None:
-    """do_unwire only elevates when the managed dir is not writable by us,
-    so unwiring works unprivileged after the ownership grant.
-    """
-    text = _script_text()
-    body = _extract_func(text, "do_unwire() {")
-    assert '"$MANAGED_DIR"' in body and "priv_prefix" in body
-    # It checks dir writability before elevating (removing needs write on the
-    # dir, not the file).
-    assert '[ ! -w "$MANAGED_DIR" ]' in body, (
-        "do_unwire must check the managed dir is writable before elevating"
+    # The ownership-grant helpers that broke trust must not be present.
+    assert "_can_write_managed" not in text, (
+        "_can_write_managed must not exist: it enabled rootless refresh by "
+        "detecting a user-owned dir, which the desktop rejects as untrusted"
     )
-
-
-def test_can_write_managed_file_writable(tmp_path: Path) -> None:
-    """_can_write_managed returns 0 (success) when the managed file exists
-    and is writable by us — the post-grant state the launcher relies on.
-    """
-    managed_dir = tmp_path / "claude-desktop"
-    managed_dir.mkdir()
-    managed_file = managed_dir / "managed-settings.json"
-    managed_file.write_text("{}", encoding="utf-8")
-    managed_file.chmod(0o644)
-    wrapper = tmp_path / "run.sh"
-    wrapper.write_text(
-        _extract_func(_script_text(), "_can_write_managed() {")
-        + f'\nMANAGED_DIR="{managed_dir}"\nMANAGED_FILE="{managed_file}"\n'
-        "_can_write_managed && echo WRITABLE || echo NOT_WRITABLE\n",
-        encoding="utf-8",
+    assert "_grant_ownership" not in text, (
+        "_grant_ownership must not exist: it chowned the managed dir to the "
+        "invoking user, breaking the desktop's root-ownership trust check"
     )
-    result = subprocess.run(
-        ["bash", str(wrapper)], capture_output=True, text=True, check=False
-    )
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "WRITABLE", (
-        f"_can_write_managed should succeed for a user-writable file; "
-        f"got: {result.stdout!r} stderr={result.stderr!r}"
-    )
-
-
-def test_can_write_managed_root_owned_file_not_writable(tmp_path: Path) -> None:
-    """_can_write_managed returns non-zero when the file exists but is not
-    writable by us (e.g. root-owned 0644) — the pre-grant state that should
-    trigger elevation.
-    """
-    managed_dir = tmp_path / "claude-desktop"
-    managed_dir.mkdir()
-    managed_file = managed_dir / "managed-settings.json"
-    managed_file.write_text("{}", encoding="utf-8")
-    # 0444 = read-only for everyone; not writable by the unprivileged user.
-    managed_file.chmod(0o444)
-    wrapper = tmp_path / "run.sh"
-    wrapper.write_text(
-        _extract_func(_script_text(), "_can_write_managed() {")
-        + f'\nMANAGED_DIR="{managed_dir}"\nMANAGED_FILE="{managed_file}"\n'
-        # Run as the current (non-root) user; if we ARE root in CI, skip the
-        # writability assertion since root bypasses file perms.
-        'if [ "$(id -u)" -eq 0 ]; then echo SKIP_ROOT; '
-        "else _can_write_managed && echo WRITABLE || echo NOT_WRITABLE; fi\n",
-        encoding="utf-8",
-    )
-    result = subprocess.run(
-        ["bash", str(wrapper)], capture_output=True, text=True, check=False
-    )
-    assert result.returncode == 0, result.stderr
-    out = result.stdout.strip()
-    if out == "SKIP_ROOT":
-        return  # running as root in CI — root bypasses perms, nothing to assert
-    assert out == "NOT_WRITABLE", (
-        f"_can_write_managed should fail for a read-only file; got {out!r}"
+    # No unprivileged install path (no `install -m 0644 "$_tmpfile"` without
+    # -o root) that would produce a user-owned file.
+    assert 'install -m 0644 "$_tmpfile"' not in body, (
+        "do_write must not install the file unprivileged (no -o root): a "
+        "user-owned managed file is rejected by the desktop trust check"
     )
 
 

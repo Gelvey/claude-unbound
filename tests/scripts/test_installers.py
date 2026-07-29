@@ -256,14 +256,8 @@ def test_install_sh_desktop_supports_dnf() -> None:
 
 
 def test_install_sh_desktop_runs_setup_gateway() -> None:
-    """install.sh runs setup-gateway.sh via sudo after installing the desktop app.
-
-    Running under sudo triggers the one-time ownership grant that chowns the
-    managed-settings dir to the invoking user, so the launcher can refresh
-    managed settings on every boot without root.
-    """
+    """install.sh runs setup-gateway.sh after installing the desktop app."""
     text = _script_text("install.sh")
     body = _braced_body(text, "setup_claude_desktop()")
     assert "setup-gateway.sh" in body
     assert "--unwire" in body
-    assert "sudo bash" in body and "setup-gateway.sh" in body

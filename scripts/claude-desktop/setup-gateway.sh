@@ -314,55 +314,6 @@ priv_prefix() {
     fi
 }
 
-# Can the current process create or overwrite the managed-settings file
-# WITHOUT elevation? Returns 0 (yes) when:
-#   - the file already exists and is writable by us, OR
-#   - the file is absent but the directory exists and is writable by us
-#     (we can create the file), OR
-#   - we are root (can write anything).
-# Otherwise returns 1 (need sudo/pkexec). This is what lets the launcher
-# refresh managed settings unprivileged AFTER a prior `sudo setup-gateway.sh`
-# run granted ownership of the managed dir to the invoking user (see the
-# ownership-grant block in do_write).
-_can_write_managed() {
-    [ "$(id -u)" -eq 0 ] && return 0
-    if [ -e "$MANAGED_FILE" ]; then
-        [ -w "$MANAGED_FILE" ]
-    elif [ -d "$MANAGED_DIR" ]; then
-        [ -w "$MANAGED_DIR" ]
-    else
-        # Directory does not exist yet: can we create it? Only if the
-        # parent (e.g. /etc) is writable by us — unlikely for an unprivileged
-        # user, so this almost always means "need elevation".
-        [ -w "$(dirname "$MANAGED_DIR")" ] 2>/dev/null
-    fi
-}
-
-# Transfer ownership of the managed dir (and its file) to the real invoking
-# user so subsequent unprivileged runs (e.g. the launcher) can refresh
-# managed settings without root. This is the one-time grant: run via
-# `sudo bash setup-gateway.sh`, it chowns the dir to SUDO_USER, and every
-# later `bash setup-gateway.sh` takes the _can_write_managed fast path.
-#
-# _priv is the privilege prefix the caller resolved (empty when we can
-# already write directly — in which case no grant is needed). The grant
-# target is SUDO_USER when the whole script runs under sudo, otherwise $USER
-# (for the per-command-sudo path). Root-owned runs with no SUDO_USER (e.g.
-# running as root directly) skip the grant — there's no non-root user to
-# hand ownership to.
-_grant_ownership() {
-    local _priv="$1" _grant_user _grp
-    _grant_user="${SUDO_USER:-${USER:-}}"
-    [ -n "$_grant_user" ] || return 0
-    [ "$_grant_user" != "root" ] || return 0
-    _grp="$(id -gn "$_grant_user" 2>/dev/null || printf '%s' "$_grant_user")"
-    if [ "$(id -u)" -eq 0 ]; then
-        chown -R "$_grant_user:$_grp" "$MANAGED_DIR" 2>/dev/null
-    elif [ -n "$_priv" ]; then
-        $_priv chown -R "$_grant_user:$_grp" "$MANAGED_DIR" 2>/dev/null
-    fi
-}
-
 # ---------------------------------------------------------------------------
 # Mode: --check
 # ---------------------------------------------------------------------------
@@ -420,16 +371,10 @@ do_unwire() {
         exit 0
     fi
 
-    # Removing a file needs write permission on the containing directory, not
-    # on the file itself. If the dir was granted to us (see _grant_ownership)
-    # we can unwire without root; otherwise elevate.
-    _priv=""
-    if [ ! -w "$MANAGED_DIR" ]; then
-        _priv="$(priv_prefix)"
-        if [ -z "$_priv" ]; then
-            echo "Error: need sudo or pkexec to remove ${MANAGED_FILE}" >&2
-            exit 1
-        fi
+    _priv="$(priv_prefix)"
+    if [ -z "$_priv" ]; then
+        echo "Error: need sudo or pkexec to remove ${MANAGED_FILE}" >&2
+        exit 1
     fi
 
     $_priv rm -f "$MANAGED_FILE"
@@ -452,22 +397,18 @@ do_write() {
         exit 1
     fi
 
-    # Determine whether we can write the managed settings file without
-    # elevation. A prior `sudo bash setup-gateway.sh` run grants ownership
-    # of the managed dir to the invoking user (see _grant_ownership below),
-    # so the launcher — which runs this script unprivileged — can refresh
-    # the file on every boot without prompting for sudo. Only elevate when
-    # the dir is still root-owned (first run, or never granted).
-    _priv=""
-    if ! _can_write_managed; then
-        _priv="$(priv_prefix)"
-        if [ -z "$_priv" ]; then
-            echo "Error: need sudo or pkexec to write under ${MANAGED_DIR}" >&2
-            echo "Run once with sudo to grant ownership, then the launcher" >&2
-            echo "can refresh it without root:" >&2
-            echo "  sudo bash $0" >&2
-            exit 1
-        fi
+    # Privilege elevation is required to write the managed settings file.
+    # The file MUST remain root-owned: the Claude Desktop trust check rejects
+    # a managed-settings.json that is not owned by root (and not group- or
+    # world-writable, with a root-owned parent dir), ignoring it and falling
+    # back to the default claude.ai login. So we always elevate here and
+    # install the file root-owned; the launcher relies on `--check` to skip
+    # the write entirely when the gateway is already correctly wired rather
+    # than refreshing unprivileged.
+    _priv="$(priv_prefix)"
+    if [ -z "$_priv" ]; then
+        echo "Error: need sudo or pkexec to write under ${MANAGED_DIR}" >&2
+        exit 1
     fi
 
     # Build the model list for the picker from the chat model env vars
@@ -533,36 +474,19 @@ do_write() {
             | jq --argjson mcp "$MCP_JSON" '.managedMcpServers = $mcp')"
     fi
 
-    # Ensure the managed directory exists. When elevated we create it
-    # root-owned; when unprivileged (dir already granted to us) we create
-    # it owned by the current user.
-    if [ -n "$_priv" ]; then
-        $_priv install -d -m 0755 -o root -g root "$MANAGED_DIR"
-    else
-        install -d -m 0755 "$MANAGED_DIR"
-    fi
+    # Ensure the managed directory exists, root-owned, mode 0755.
+    $_priv install -d -m 0755 -o root -g root "$MANAGED_DIR"
 
-    # Write via a temp file, then install into place.  This guarantees a
-    # regular file (not symlink) that is not group-/world-writable.  When
-    # elevated the file is root-owned; the ownership grant below then
-    # transfers it to the invoking user so future runs need no root.
+    # Write via a temp file, then install into place with root ownership
+    # and 0644 perms.  This guarantees: regular file (not symlink), root-owned,
+    # not group-/world-writable.  Root ownership is REQUIRED — the desktop's
+    # trust check rejects a user-owned managed-settings.json and falls back
+    # to the default claude.ai login.
     _tmpfile=""
     _tmpfile="$(mktemp)"
     printf '%s\n' "$SETTINGS_JSON" > "$_tmpfile"
-    if [ -n "$_priv" ]; then
-        $_priv install -m 0644 -o root -g root "$_tmpfile" "$MANAGED_FILE"
-    else
-        install -m 0644 "$_tmpfile" "$MANAGED_FILE"
-    fi
+    $_priv install -m 0644 -o root -g root "$_tmpfile" "$MANAGED_FILE"
     rm -f "$_tmpfile"
-
-    # One-time ownership grant: when this script runs elevated (via sudo),
-    # transfer ownership of the managed dir + file to the real invoking
-    # user. After this, the launcher's unprivileged `bash setup-gateway.sh`
-    # runs take the _can_write_managed fast path and refresh the file
-    # without ever prompting for root. Safe to run every time — it's a
-    # no-op once the dir is already user-owned and we're not elevated.
-    _grant_ownership "$_priv"
 
     # Summary.
     echo "Gateway wired for Claude Desktop (${MANAGED_DIR})."

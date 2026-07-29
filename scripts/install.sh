@@ -669,14 +669,14 @@ setup_claude_desktop() {
     fi
 
     # Wire the gateway (writes the platform-appropriate managed-settings.json
-    # via sudo). Running setup-gateway.sh under sudo performs a one-time
-    # ownership grant: it chowns the managed-settings dir to the invoking
-    # user so the launcher can refresh managed settings on every boot
-    # WITHOUT prompting for root. The proxy is not running during install,
-    # so the model list may be empty — re-run setup-gateway.sh (no sudo
-    # needed) after starting fcc-server to populate inferenceModels.
+    # via sudo). The managed file MUST stay root-owned — the desktop's trust
+    # check rejects a user-owned file and falls back to the claude.ai login —
+    # so setup-gateway.sh always elevates and installs it root-owned. The
+    # proxy is not running during install, so the model list may be empty —
+    # re-run setup-gateway.sh after starting fcc-server to populate
+    # inferenceModels.
     if [ -f "$REPO_DIR/scripts/claude-desktop/setup-gateway.sh" ]; then
-        run sudo bash "$REPO_DIR/scripts/claude-desktop/setup-gateway.sh" \
+        run bash "$REPO_DIR/scripts/claude-desktop/setup-gateway.sh" \
             || printf 'WARNING: setup-gateway.sh did not complete; re-run it manually after starting fcc-server.\n'
         printf '\nTo populate the model list, start the proxy (fcc-server) and re-run:\n'
         printf '  bash %s/scripts/claude-desktop/setup-gateway.sh\n' "$REPO_DIR"
