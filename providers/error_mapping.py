@@ -286,7 +286,10 @@ def map_error(
                 raw_error=str(e),
             )
         return APIError(message, status_code=500, raw_error=str(e))
-    if isinstance(e, openai.APITimeoutError):
+    if isinstance(e, openai.APIConnectionError):
+        # APITimeoutError is a subclass; both are transient connection-level
+        # failures. Map to OverloadedError so the exhausted-retries message
+        # reads as a retryable condition instead of a generic 500.
         return OverloadedError(message, raw_error=str(e))
     if isinstance(e, openai.APIError):
         return APIError(

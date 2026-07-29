@@ -568,3 +568,56 @@ class TestProviderRateLimiter:
             await limiter.execute_with_retry(
                 always_timeout, max_retries=2, base_delay=0.01, max_delay=0.1, jitter=0
             )
+
+    @pytest.mark.asyncio
+    async def test_execute_with_retry_succeeds_on_openai_api_connection_error(self):
+        """A non-timeout openai.APIConnectionError (TCP reset / dropped conn) is retried.
+
+        Cloudflare Workers AI can drop the connection on the initial request
+        instead of returning a 408/5xx; this used to surface immediately to the
+        client (forcing a manual 'continue'). It must now backoff-retry like an
+        APITimeoutError.
+        """
+        import openai
+        from httpx import Request
+
+        GlobalRateLimiter.reset_instance()
+        limiter = GlobalRateLimiter.get_instance(rate_limit=100, rate_window=60)
+
+        call_count = 0
+
+        async def conn_error_then_ok():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                exc = openai.APIConnectionError(request=Request("POST", "http://x"))
+                assert not isinstance(exc, openai.APITimeoutError)
+                raise exc
+            return "ok"
+
+        result = await limiter.execute_with_retry(
+            conn_error_then_ok, max_retries=2, base_delay=0.01, max_delay=0.1, jitter=0
+        )
+        assert result == "ok"
+        assert call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_execute_with_retry_exhausts_openai_api_connection_error(self):
+        """When all APIConnectionError retries exhausted, last exception is raised."""
+        import openai
+        from httpx import Request
+
+        GlobalRateLimiter.reset_instance()
+        limiter = GlobalRateLimiter.get_instance(rate_limit=100, rate_window=60)
+
+        async def always_conn_error():
+            raise openai.APIConnectionError(request=Request("POST", "http://x"))
+
+        with pytest.raises(openai.APIConnectionError):
+            await limiter.execute_with_retry(
+                always_conn_error,
+                max_retries=2,
+                base_delay=0.01,
+                max_delay=0.1,
+                jitter=0,
+            )
