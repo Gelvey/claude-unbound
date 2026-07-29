@@ -201,6 +201,32 @@ else
     fi
 fi
 
+# ── Claude Desktop diagnostics preflight ─────────────────────────────────────
+# If the user chose desktop mode and the unofficial build is installed, run
+# its --doctor check so issues that block features (e.g. cowork needing
+# QEMU/firmware) are surfaced before launch. The doctor always exits 0 even
+# with [WARN]/[FAIL], so we show the output and let the user opt out of
+# desktop mode if they see a dealbreaker.
+_preflight_mode="$(cat "$MODE_FILE" 2>/dev/null | tr -d '[:space:]')"
+if [ "$_preflight_mode" = "desktop" ] && command -v claude-desktop-unofficial >/dev/null 2>&1; then
+    echo ""
+    echo "  ╔══════════════════════════════════════════════════════════╗"
+    echo "  ║        Claude Desktop — Diagnostics Preflight            ║"
+    echo "  ╚══════════════════════════════════════════════════════════╝"
+    echo ""
+    claude-desktop-unofficial --doctor 2>&1 | sed 's/^/  /'
+    echo ""
+    printf "  Launch Claude Desktop anyway? [Y/n] "
+    read -r _doc_reply
+    echo ""
+    case "$_doc_reply" in
+        n|N)
+            echo "cli" > "$MODE_FILE"
+            echo "  [fcc] Switching to CLI mode per your choice."
+            ;;
+    esac
+fi
+
 echo ""
 echo "[fcc] Preflight complete — launching Claude Unbound..."
 sleep 1
