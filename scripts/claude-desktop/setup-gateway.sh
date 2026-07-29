@@ -56,17 +56,38 @@ _env_val() {
         | sed -E "s/^${key}=//; s/^\"(.*)\"$/\1/; s/^'(.*)'$/\1/" || true
 }
 
-# Build a deduped, ordered JSON array of gateway model IDs from the chat
-# model env vars (MODEL, MODEL_OPUS, MODEL_SONNET, MODEL_HAIKU). Each
-# non-empty ref becomes "anthropic/{ref}", mirroring gateway_model_id() in
-# api/gateway_model_ids.py and the refs returned by
-# settings.configured_chat_model_refs(). MODEL is the default and stays
-# first; duplicate refs are dropped. Emits a compact JSON array on stdout,
-# or nothing if MODEL is absent/empty (the caller then falls back to the
-# proxy /v1/models fetch). Args: [env_file]
+# Build a deduped, ordered JSON array of Anthropic-family model routes for
+# the Claude Desktop inferenceModels picker, from the chat model env vars
+# (MODEL, MODEL_OPUS, MODEL_SONNET, MODEL_HAIKU).
+#
+# The desktop's managed-settings validator rejects gateway model IDs that
+# don't reference an Anthropic model — it requires a bare "claude-*" id or a
+# "anthropic/claude-*" gateway route. A raw ref like
+# "anthropic/open_router/deepseek/deepseek-v4-flash" is rejected because the
+# path after "anthropic/" is not a claude-* model. So we emit Anthropic-family
+# routes instead of the raw provider/model refs.
+#
+# The gateway (fcc-server) routes these by family tier via
+# Settings.resolve_model(): a route whose name contains "opus"/"sonnet"/
+# "haiku" maps to MODEL_OPUS/MODEL_SONNET/MODEL_HAIKU, and any other name
+# falls back to MODEL. So:
+#   MODEL (default) -> "anthropic/claude-default"  (no tier substring -> default)
+#   MODEL_OPUS      -> "anthropic/claude-opus-4-20250514"
+#   MODEL_SONNET    -> "anthropic/claude-sonnet-4-20250514"
+#   MODEL_HAIKU     -> "anthropic/claude-haiku-4-20250514"
+# The opus/sonnet/haiku suffixes reuse real Anthropic model IDs (matching
+# SUPPORTED_CLAUDE_MODELS in api/model_catalog.py) so they route correctly
+# and are unambiguous. The date stamp in each id is hidden from the picker
+# via "labelOverride" (clean family names like "Claude Opus 4"); only the
+# "name" routes, so the backend is untouched. MODEL is emitted first because
+# the desktop treats the first inferenceModels entry as its default
+# selection. Entries pointing at the same underlying ref are deduped (first
+# wins) so the picker never shows two routes to the same model. Emits a
+# compact JSON array on stdout, or nothing if MODEL is absent/empty (the
+# caller then falls back to the proxy /v1/models fetch). Args: [env_file]
 _curated_models_json() {
     local file="${1:-$FCC_ENV}"
-    local model opus sonnet haiku ref
+    local model opus sonnet haiku
     model="$(_env_val MODEL "$file")"
     opus="$(_env_val MODEL_OPUS "$file")"
     sonnet="$(_env_val MODEL_SONNET "$file")"
@@ -75,12 +96,53 @@ _curated_models_json() {
     # Without the default model the curated list is not meaningful.
     [ -n "$model" ] || return 0
 
+    # Emit "<name>\t<label>\t<ref>" triples and dedup by the underlying ref
+    # ($3), so two tiers pointing at the same model only appear once (first
+    # wins). Each entry is an object: "name" is the routing id (unchanged —
+    # the gateway routes by the opus/sonnet/haiku substring in it) and
+    # "labelOverride" is the clean picker label that hides the date stamp.
     {
-        for ref in "$model" "$opus" "$sonnet" "$haiku"; do
-            [ -n "$ref" ] || continue
-            printf 'anthropic/%s\n' "$ref"
-        done
-    } | awk '!seen[$0]++' | jq -R -s -c 'split("\n") | map(select(length > 0))'
+        printf 'anthropic/claude-default\tClaude Default\t%s\n' "$model"
+        [ -n "$opus" ]   && printf 'anthropic/claude-opus-4-20250514\tClaude Opus 4\t%s\n' "$opus"
+        [ -n "$sonnet" ] && printf 'anthropic/claude-sonnet-4-20250514\tClaude Sonnet 4\t%s\n' "$sonnet"
+        [ -n "$haiku" ]  && printf 'anthropic/claude-haiku-4-20250514\tClaude Haiku 4\t%s\n' "$haiku"
+    } | awk -F'\t' '!seen[$3]++' \
+      | jq -R -s -c '
+          split("\n") | map(select(length > 0)) | map(split("\t"))
+          | map({name: .[0], labelOverride: .[1]})
+        '
+}
+
+# Build a managedMcpServers JSON array mirroring the user-scoped MCP servers
+# configured for the Claude Code CLI (~/.claude.json top-level "mcpServers"),
+# converted to the desktop's managedMcpServers schema (an array of objects
+# with "name" + "transport" + connection fields). The 3P desktop reads MCP
+# servers from managedMcpServers in managed-settings.json — it does NOT pick
+# up ~/.claude.json mcpServers like the official app's Code tab does — so we
+# replicate them here to keep the CLI and desktop in sync. Drops entries
+# whose transport the desktop doesn't support (e.g. "ws"). Emits a compact
+# JSON array on stdout, or nothing if ~/.claude.json has no mcpServers.
+# Args: [claude_json_path]
+_managed_mcp_servers_json() {
+    local claude_json="${1:-$HOME/.claude.json}"
+    [ -f "$claude_json" ] || return 0
+    command -v jq >/dev/null 2>&1 || return 0
+    jq '
+      [ (.mcpServers // {}) | to_entries[] |
+        {
+          name: .key,
+          transport: (.value.type // "stdio"),
+          command: .value.command,
+          args: .value.args,
+          env: .value.env,
+          url: .value.url,
+          headers: .value.headers
+        }
+        | with_entries(select(.value != null))
+        | if .transport == "streamable-http" then .transport = "http" else . end
+        | select(.transport == "stdio" or .transport == "http" or .transport == "sse")
+      ]
+    ' "$claude_json" 2>/dev/null
 }
 
 # Defaults; overridden from ~/.fcc/.env below.
@@ -118,6 +180,10 @@ Notes:
   - In gateway mode the desktop app does not prompt for a claude.ai login.
     The gateway credential is used instead.  Chat/Cowork tabs requiring a
     claude.ai identity are unavailable.
+  - MCP servers configured for the Claude Code CLI in ~/.claude.json
+    (top-level "mcpServers") are mirrored into the desktop's
+    "managedMcpServers" so both surfaces see the same servers. Re-run
+    setup-gateway.sh after adding/removing CLI MCP servers to resync.
   - If you later enable "toolSearchEnabled" and see HTTP 400 errors, that
     is the gateway rejecting beta headers.  Leave tool search off.
   - Quit and reopen Claude Desktop for changes to take effect.
@@ -260,33 +326,35 @@ do_write() {
         fi
     fi
 
-    # Build the JSON object using jq -n to guarantee valid escaping.
+    # Mirror the CLI's user-scoped MCP servers (~/.claude.json mcpServers)
+    # into the desktop's managedMcpServers so the desktop sees the same MCP
+    # servers the CLI does.
+    MCP_JSON="$(_managed_mcp_servers_json)"
+
+    # Build the JSON object using jq -n to guarantee valid escaping. Start
+    # from the base gateway fields, then add inferenceModels and
+    # managedMcpServers only when non-empty.
+    SETTINGS_JSON="$(jq -n \
+        --arg url "$BASE_URL" \
+        --arg key "$AUTH_TOKEN" \
+        '{
+            inferenceProvider: "gateway",
+            inferenceGatewayBaseUrl: $url,
+            inferenceGatewayApiKey: $key,
+            inferenceGatewayAuthScheme: "bearer",
+            inferenceCredentialKind: "static"
+        }')"
+
     if [ -n "$MODELS_JSON" ]; then
         # Shellcheck: MODELS_JSON is a valid JSON array string from jq.
         # We pass it via --argjson so jq parses it as JSON, not a string.
-        SETTINGS_JSON="$(jq -n \
-            --arg url "$BASE_URL" \
-            --arg key "$AUTH_TOKEN" \
-            --argjson models "$MODELS_JSON" \
-            '{
-                inferenceProvider: "gateway",
-                inferenceGatewayBaseUrl: $url,
-                inferenceGatewayApiKey: $key,
-                inferenceGatewayAuthScheme: "bearer",
-                inferenceCredentialKind: "static",
-                inferenceModels: $models
-            }')"
-    else
-        SETTINGS_JSON="$(jq -n \
-            --arg url "$BASE_URL" \
-            --arg key "$AUTH_TOKEN" \
-            '{
-                inferenceProvider: "gateway",
-                inferenceGatewayBaseUrl: $url,
-                inferenceGatewayApiKey: $key,
-                inferenceGatewayAuthScheme: "bearer",
-                inferenceCredentialKind: "static"
-            }')"
+        SETTINGS_JSON="$(printf '%s' "$SETTINGS_JSON" \
+            | jq --argjson models "$MODELS_JSON" '.inferenceModels = $models')"
+    fi
+
+    if [ -n "$MCP_JSON" ] && [ "$MCP_JSON" != "[]" ]; then
+        SETTINGS_JSON="$(printf '%s' "$SETTINGS_JSON" \
+            | jq --argjson mcp "$MCP_JSON" '.managedMcpServers = $mcp')"
     fi
 
     # Ensure the managed directory exists, root-owned, mode 0755.
@@ -310,6 +378,11 @@ do_write() {
         echo "  Models (${MODELS_SOURCE}):  ${_count}"
     else
         echo "  Models:           none (no MODEL env var and proxy was down)"
+    fi
+    if [ -n "$MCP_JSON" ] && [ "$MCP_JSON" != "[]" ]; then
+        _mcp_count=""
+        _mcp_count="$(printf '%s' "$MCP_JSON" | jq 'length')"
+        echo "  MCP servers:      ${_mcp_count} (mirrored from ~/.claude.json)"
     fi
     echo "  Managed file:     ${MANAGED_FILE}"
     echo ""
