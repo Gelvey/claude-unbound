@@ -56,9 +56,11 @@ from fastapi import APIRouter
 
 router = APIRouter()
 
+
 @router.get("/hello")
 def hello():
     return {"hello": "module"}
+
 
 FCC_MODULE = module("hello").router(router)
 ```
@@ -73,15 +75,19 @@ from fastapi import APIRouter
 
 router = APIRouter()
 
+
 @router.get("/ping")
 def ping():
     return {"ok": True}
 
+
 async def startup(app, settings):
     print("Module is starting")
 
+
 async def shutdown(app, settings):
     print("Module is shutting down")
+
 
 def setup_module(app, settings):
     return (
@@ -130,16 +136,18 @@ from config.provider_catalog import ProviderDescriptor
 from providers.base import BaseProvider, ProviderConfig
 from config.settings import Settings
 
+
 class MyProvider(BaseProvider):
     def __init__(self, config: ProviderConfig, settings: Settings):
         self.config = config
         self.settings = settings
 
-    async def stream_messages(self, request):
-        ...
+    async def stream_messages(self, request): ...
+
 
 def my_factory(config: ProviderConfig, settings: Settings) -> BaseProvider:
     return MyProvider(config, settings)
+
 
 descriptor = ProviderDescriptor(
     provider_id="my_provider",
@@ -147,9 +155,7 @@ descriptor = ProviderDescriptor(
     capabilities=("tool_use",),
 )
 
-FCC_MODULE = Module(name="my_provider").provider(
-    "my_provider", descriptor, my_factory
-)
+FCC_MODULE = Module(name="my_provider").provider("my_provider", descriptor, my_factory)
 ```
 
 ### HTTP middleware
@@ -163,11 +169,13 @@ from api.modules import Module
 from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi.responses import JSONResponse
 
+
 class RequireApiKey(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         if request.headers.get("X-My-Key") != "secret":
             return JSONResponse({"error": "unauthorized"}, status_code=401)
         return await call_next(request)
+
 
 FCC_MODULE = Module(name="auth").middleware(RequireApiKey)
 ```
@@ -182,10 +190,12 @@ FastAPI response object to serve a custom response without calling the provider.
 from fastapi.responses import JSONResponse
 from api.modules import Module
 
+
 async def maybe_handle_locally(routed_request):
     if routed_request.request.messages[-1].content == "ping":
         return JSONResponse({"reply": "pong"})
     return None  # pass through to the provider
+
 
 FCC_MODULE = Module(name="interceptor").intercept(maybe_handle_locally)
 ```
@@ -201,15 +211,16 @@ previous result.
 from api.modules import Module
 from api.request_pipeline import RoutedMessagesRequest
 
+
 def reroute_to_local(routed, settings):
     if "local" in (routed.request.system or ""):
         from api.model_router import ModelRouter
         from config.settings import get_settings
+
         resolved = ModelRouter(get_settings()).resolve("local/llama-3.1-8b")
-        return RoutedMessagesRequest(
-            request=routed.request, resolved=resolved
-        )
+        return RoutedMessagesRequest(request=routed.request, resolved=resolved)
     return None
+
 
 FCC_MODULE = Module(name="local_reroute").reroute(reroute_to_local)
 ```
@@ -224,8 +235,7 @@ are appended (cache-safe) — they do not invalidate prompt-cache.
 from api.modules import Module
 
 DIRECTIVE = (
-    "Project: Acme. Style: terse, no preamble. "
-    "Always end with a 'references:' section."
+    "Project: Acme. Style: terse, no preamble. Always end with a 'references:' section."
 )
 
 FCC_MODULE = Module(name="acme_style").system_directive(DIRECTIVE)
@@ -239,8 +249,10 @@ default to compose.
 ```python
 from api.modules import Module
 
+
 def my_counter(messages, system, tools):
     return sum(len(m.get("content", "")) for m in messages) // 4
+
 
 FCC_MODULE = Module(name="estimate").token_counter(my_counter)
 ```
@@ -305,9 +317,11 @@ process exit code.
 ```python
 from api.modules import Module, ModuleCliCommand
 
+
 def mycmd(argv):
     print("ran with", argv)
     return 0
+
 
 FCC_MODULE = Module(name="my_cli").cli_command(
     name="mycmd",
@@ -338,9 +352,7 @@ backend = McpBackend(
     args=["-m", "my_module.mcp_server"],
 )
 
-FCC_MODULE = Module(name="my_mcp").mcp_server(
-    name="my_tool", backend=backend
-)
+FCC_MODULE = Module(name="my_mcp").mcp_server(name="my_tool", backend=backend)
 ```
 
 ### Trace listener
@@ -353,8 +365,10 @@ from api.modules import Module
 
 events = []
 
+
 def listener(stage, event, source, fields):
     events.append((stage, event, source))
+
 
 FCC_MODULE = Module(name="audit").trace_listener(listener)
 ```
@@ -368,6 +382,7 @@ without calling the provider. Returning `None` keeps the request flowing.
 from api.models.responses import MessagesResponse
 from api.modules import Module
 
+
 async def skip_pong(request_data, settings):
     if request_data.messages and request_data.messages[-1].content == "ping":
         return MessagesResponse(
@@ -378,6 +393,7 @@ async def skip_pong(request_data, settings):
         )
     return None
 
+
 FCC_MODULE = Module(name="pinger").optimizer(skip_pong)
 ```
 
@@ -387,13 +403,16 @@ FCC_MODULE = Module(name="pinger").optimizer(skip_pong)
 from api.modules import Module
 from messaging.platforms.base import MessagingPlatform
 
+
 class SlackPlatform(MessagingPlatform):
     async def start(self): ...
     async def stop(self): ...
     async def send_message(self, *args, **kwargs): ...
 
+
 def make_slack(options):
     return SlackPlatform(options)
+
 
 FCC_MODULE = Module(name="slack_bridge").messaging_platform("slack", make_slack)
 ```

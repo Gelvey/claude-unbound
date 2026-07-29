@@ -143,12 +143,13 @@ Create a dedicated package so the feature is modular and removable.
 - **`api/graphify/config.py`** — Pydantic models:
   ```python
   class GraphifyProject(BaseModel):
-      path: str                    # absolute repo root
-      name: str                    # friendly name
+      path: str  # absolute repo root
+      name: str  # friendly name
       graphify_out: str = "graphify-out"
       last_indexed: datetime | None = None
       status: Literal["missing", "indexing", "ready", "stale", "error"] = "missing"
       error_message: str = ""
+
 
   class GraphifyProjectRegistry(BaseModel):
       active_project_path: str | None = None
@@ -210,11 +211,13 @@ graphify_auto_index_on_start: bool = Field(
 
 - Add section:
   ```python
-  ConfigSectionSpec(
-      "graphify",
-      "Graphify",
-      "Graphify knowledge-graph integration for per-project code understanding.",
-  ),
+  (
+      ConfigSectionSpec(
+          "graphify",
+          "Graphify",
+          "Graphify knowledge-graph integration for per-project code understanding.",
+      ),
+  )
   ```
 - Add fields:
   - `GRAPHIFY_ENABLED` → `graphify_enabled`, `boolean`, `restart_required=True`
