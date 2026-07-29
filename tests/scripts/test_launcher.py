@@ -217,6 +217,37 @@ def test_launcher_sh_clones_repo_when_missing() -> None:
     assert 'if [ ! -d "$REPO_DIR" ]' in text
 
 
+def test_launcher_sh_detects_desktop_macos() -> None:
+    """launcher.sh detects Claude Desktop on macOS via /Applications/Claude.app."""
+    text = _script_text()
+    body = _braced_body(text, "detect_desktop_binary()")
+    assert "Darwin" in body
+    assert "/Applications/Claude.app" in body
+    assert "claude" in body
+
+
+def test_launcher_sh_detects_desktop_linux_unofficial() -> None:
+    """launcher.sh detects the unofficial Claude Desktop on Linux."""
+    text = _script_text()
+    body = _braced_body(text, "detect_desktop_binary()")
+    assert "Linux" in body
+    assert "claude-desktop-unofficial" in body
+
+
+def test_launcher_sh_detects_desktop_linux_official() -> None:
+    """launcher.sh detects the official Claude Desktop beta on Linux."""
+    text = _script_text()
+    body = _braced_body(text, "detect_desktop_binary()")
+    # Check for the official binary as a distinct printf argument
+    # (not as a substring of claude-desktop-unofficial).
+    assert "printf 'claude-desktop'" in body or "printf 'claude'" in body
+    # The unofficial binary should be checked first (backward compat).
+    unofficial_idx = body.index("claude-desktop-unofficial")
+    # Find the official binary after the unofficial one
+    after_unofficial = body[unofficial_idx + len("claude-desktop-unofficial") :]
+    assert "claude-desktop" in after_unofficial or "claude" in after_unofficial
+
+
 def test_start_mcp_expand_path_produces_correct_absolute_paths(
     tmp_path,
 ) -> None:

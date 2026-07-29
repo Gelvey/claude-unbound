@@ -288,13 +288,64 @@ fi
 rm -rf "$PREFLIGHT_DIR"
 
 # ── Desktop detection + not-installed fallback ───────────────────────────────
-if [ "$LAUNCH_MODE" = "desktop" ] && ! command -v claude-desktop-unofficial >/dev/null 2>&1; then
-    echo "[fcc] Claude Desktop (unofficial) not found on PATH." >&2
-    echo "[fcc] Install it from https://github.com/aaddrick/claude-desktop-debian :" >&2
-    echo "[fcc]   sudo curl -fsSL https://pkg.claude-desktop-debian.dev/rpm/claude-desktop-unofficial.repo -o /etc/yum.repos.d/claude-desktop-unofficial.repo" >&2
-    echo "[fcc]   sudo dnf install claude-desktop-unofficial" >&2
-    notify critical "Claude Unbound" "Claude Desktop not installed — falling back to CLI. See terminal for install commands."
-    LAUNCH_MODE="cli"
+# Detect the Claude Desktop binary for the current platform:
+#   macOS (Darwin)   — /Applications/Claude.app (brew cask) or `claude` on PATH
+#   Linux unofficial — claude-desktop-unofficial (Fedora/RHEL, RPM)
+#   Linux official    — claude-desktop or claude (Ubuntu/Debian, .deb beta)
+detect_desktop_binary() {
+    local os
+    os="$(uname -s)"
+    case "$os" in
+        Darwin)
+            # The brew cask installs /Applications/Claude.app; the `claude`
+            # CLI shim may also be on PATH.
+            if command -v claude >/dev/null 2>&1; then
+                printf 'claude'
+            elif [ -d "/Applications/Claude.app" ]; then
+                printf '/Applications/Claude.app'
+            else
+                printf ''
+            fi
+            ;;
+        Linux)
+            if command -v claude-desktop-unofficial >/dev/null 2>&1; then
+                printf 'claude-desktop-unofficial'
+            elif command -v claude-desktop >/dev/null 2>&1; then
+                printf 'claude-desktop'
+            elif command -v claude >/dev/null 2>&1; then
+                printf 'claude'
+            else
+                printf ''
+            fi
+            ;;
+        *)
+            printf ''
+            ;;
+    esac
+}
+
+DESKTOP_BINARY=""
+if [ "$LAUNCH_MODE" = "desktop" ]; then
+    DESKTOP_BINARY="$(detect_desktop_binary)"
+    if [ -z "$DESKTOP_BINARY" ]; then
+        case "$(uname -s)" in
+            Darwin)
+                echo "[fcc] Claude Desktop not found." >&2
+                echo "[fcc] Install via:  brew install --cask claude" >&2
+                echo "[fcc] Or download from: https://claude.ai/download" >&2
+                ;;
+            *)
+                echo "[fcc] Claude Desktop not found on PATH." >&2
+                echo "[fcc] On Fedora/RHEL (unofficial):" >&2
+                echo "[fcc]   sudo curl -fsSL https://pkg.claude-desktop-debian.dev/rpm/claude-desktop-unofficial.repo -o /etc/yum.repos.d/claude-desktop-unofficial.repo" >&2
+                echo "[fcc]   sudo dnf install claude-desktop-unofficial" >&2
+                echo "[fcc] On Ubuntu/Debian (official beta):" >&2
+                echo "[fcc]   Download from https://claude.ai/download and install with: sudo dpkg -i <file>.deb" >&2
+                ;;
+        esac
+        notify critical "Claude Unbound" "Claude Desktop not installed — falling back to CLI. See terminal for install commands."
+        LAUNCH_MODE="cli"
+    fi
 fi
 
 # ── Dependency check (remaining deps — after preflight) ──────────────────────
@@ -448,7 +499,16 @@ if [ "$LAUNCH_MODE" = "desktop" ]; then
     fi
 
     # Launch the desktop GUI detached.
-    nohup setsid "$(command -v claude-desktop-unofficial)" >/dev/null 2>&1 &
+    # On macOS, launch the .app bundle via `open`; on Linux, run the binary.
+    if [ "$(uname -s)" = "Darwin" ]; then
+        if [ "$DESKTOP_BINARY" = "/Applications/Claude.app" ]; then
+            nohup open -a "Claude" >/dev/null 2>&1 &
+        else
+            nohup setsid "$DESKTOP_BINARY" >/dev/null 2>&1 &
+        fi
+    else
+        nohup setsid "$DESKTOP_BINARY" >/dev/null 2>&1 &
+    fi
 
     TABS_OPENED=1  # Server tab always open
     if [ -x "$MCP_SCRIPT" ] && command -v npx >/dev/null 2>&1 \

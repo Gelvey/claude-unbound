@@ -496,11 +496,15 @@ Set the environment for `acp.registry.claude-acp`:
 
 Restart the IDE after changing the file.
 
-### 6. Claude Desktop (unofficial Linux build)
+### 6. Claude Desktop
 
-The unofficial Claude Desktop Linux build ([aaddrick/claude-desktop-debian](https://github.com/aaddrick/claude-desktop-debian), package `claude-desktop-unofficial`) can be wired into the proxy so it routes inference through the gateway **without requiring an Anthropic login** — the desktop equivalent of the CLI's env-var injection.
+Claude Desktop can be wired into the proxy so it routes inference through the gateway **without requiring an Anthropic login** — the desktop equivalent of the CLI's env-var injection. Three variants are supported:
 
-Wiring is via managed settings at `/etc/claude-desktop/managed-settings.json` (populated by `scripts/claude-desktop/setup-gateway.sh`), which points the desktop app at the local proxy and injects the model list from the live `/v1/models` endpoint.
+- **macOS (official)** — Claude.app installed via `brew install --cask claude` or downloaded from [claude.ai/download](https://claude.ai/download). Managed settings path: `/Library/Application Support/Claude/managed-settings.json`.
+- **Ubuntu/Debian (official beta)** — the official Claude Desktop Linux beta, packaged as a `.deb`. Managed settings path: `/etc/claude/managed-settings.json`.
+- **Fedora/RHEL (unofficial)** — [aaddrick/claude-desktop-debian](https://github.com/aaddrick/claude-desktop-debian), package `claude-desktop-unofficial`, packaged as an RPM. Managed settings path: `/etc/claude-desktop/managed-settings.json`.
+
+`scripts/claude-desktop/setup-gateway.sh` auto-detects the platform and writes the correct managed settings file, which points the desktop app at the local proxy and injects the model list from the live `/v1/models` endpoint.
 
 `scripts/launcher.sh` can launch the desktop app instead of the CLI: answer `y` at the "Launch Claude Desktop instead of Claude Code CLI?" preflight prompt, or set `FCC_LAUNCH_MODE=desktop`, or use the `Claude Unbound (Desktop)` `.desktop` shortcut.
 
@@ -510,7 +514,7 @@ Wiring is via managed settings at `/etc/claude-desktop/managed-settings.json` (p
 bash scripts/claude-desktop/setup-gateway.sh
 ```
 
-This writes the managed settings file via `sudo` and populates `inferenceModels` from the running proxy. To unwire:
+This writes the managed settings file via `sudo` (or `pkexec`) and populates `inferenceModels` from the running proxy. To unwire:
 
 ```bash
 bash scripts/claude-desktop/setup-gateway.sh --unwire
@@ -518,12 +522,29 @@ bash scripts/claude-desktop/setup-gateway.sh --unwire
 
 In gateway mode the desktop app does not prompt for a claude.ai login; Chat/Cowork tabs requiring a claude.ai identity are unavailable (matches the CLI's no-login behaviour).
 
-**Install the desktop app (Fedora/RHEL)**
+**Install the desktop app**
+
+macOS (Homebrew):
+
+```bash
+brew install --cask claude
+```
+
+Ubuntu/Debian (official beta):
+
+```bash
+# Download from https://claude.ai/download, then:
+sudo dpkg -i claude-desktop_*.deb
+```
+
+Fedora/RHEL (unofficial):
 
 ```bash
 sudo curl -fsSL https://pkg.claude-desktop-debian.dev/rpm/claude-desktop-unofficial.repo -o /etc/yum.repos.d/claude-desktop-unofficial.repo
 sudo dnf install claude-desktop-unofficial
 ```
+
+The `install.sh` installer also offers to install and wire Claude Desktop interactively on all three platforms — just re-run the installer after the desktop app is installed.
 
 ## Optional Integrations
 
