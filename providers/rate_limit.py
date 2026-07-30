@@ -56,6 +56,10 @@ def retryable_upstream_status(exc: BaseException) -> int | None:
         # APITimeoutError is a subclass; both are transient connection-level
         # failures (timeout, reset, dropped connection) that should backoff-retry.
         return 408
+    if type(exc) is openai.APIError:
+        # In-stream SSE error event (base APIError, no status_code) — see
+        # is_retryable_stream_error. Transient; retry in the 5xx backoff bucket.
+        return 500
     if isinstance(exc, openai.APIError):
         status = getattr(exc, "status_code", None)
         if isinstance(status, int) and 500 <= status <= 599:

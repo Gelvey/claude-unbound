@@ -666,6 +666,49 @@ class TestStreamingExceptionHandling:
         assert parse_sse_text(event_text)[-1].event == "message_stop"
 
     @pytest.mark.asyncio
+    async def test_in_stream_api_error_retries_via_early_retry(self):
+        """A base openai.APIError (in-stream {"error":...} event) early-retries.
+
+        Cloudflare Workers AI emits an error object mid-stream on transient worker
+        failures; the OpenAI SDK raises the *base* APIError (no status_code, not an
+        APIStatusError or APIConnectionError). Previously this surfaced immediately
+        (forcing a manual "continue"); it must now early-retry like a cutoff, with
+        the partial pre-commit output discarded and the retried stream emitted.
+        """
+        provider = _make_provider()
+        request = _make_request()
+        in_stream_error = openai.APIError(
+            "Worker exceeded time budget",
+            request=httpx.Request("POST", "https://example.com"),
+            body={"error": {"message": "Worker exceeded time budget"}},
+        )
+        assert type(in_stream_error) is openai.APIError
+        first_stream = AsyncStreamMock(
+            [_make_chunk(content="hidden")],
+            error=in_stream_error,
+        )
+        second_stream = AsyncStreamMock(
+            [
+                _make_chunk(content="recovered"),
+                _make_chunk(finish_reason="stop"),
+            ]
+        )
+
+        with patch.object(
+            provider._client.chat.completions,
+            "create",
+            new_callable=AsyncMock,
+            side_effect=[first_stream, second_stream],
+        ) as mock_create:
+            events = await _collect_stream(provider, request)
+
+        event_text = "".join(events)
+        assert mock_create.await_count == 2
+        assert "hidden" not in event_text
+        assert "recovered" in event_text
+        assert parse_sse_text(event_text)[-1].event == "message_stop"
+
+    @pytest.mark.asyncio
     async def test_clean_eof_after_text_continues_with_overlap_trim(self):
         """A truncated text stream is continued and duplicate overlap is trimmed."""
         provider = _make_provider()

@@ -117,6 +117,15 @@ def is_retryable_stream_error(exc: BaseException) -> bool:
         return isinstance(status, int) and (
             status in (408, 429) or 500 <= status <= 599
         )
+    # In-stream SSE error events: the OpenAI SDK raises the *base* openai.APIError
+    # (no status_code, neither APIStatusError nor APIConnectionError) when a
+    # provider emits an {"error": ...} object mid-stream. Cloudflare Workers AI
+    # does this on transient worker failures (worker killed mid-generation),
+    # surfacing immediately and forcing a manual "continue". Treat as retryable —
+    # bounded by the early-retry / recovery attempt caps so non-transient
+    # repeats still surface after exhausting retries.
+    if type(exc) is openai.APIError:
+        return True
     return isinstance(
         exc,
         (

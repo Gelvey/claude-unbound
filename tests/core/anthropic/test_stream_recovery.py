@@ -54,6 +54,28 @@ def test_retryable_stream_error_includes_408() -> None:
     )
 
 
+def test_retryable_stream_error_includes_in_stream_api_error() -> None:
+    """Base openai.APIError (in-stream {"error":...} event) is retryable.
+
+    Cloudflare Workers AI emits an error object mid-stream on transient worker
+    failures; the OpenAI SDK raises the *base* APIError (no status_code, not an
+    APIStatusError or APIConnectionError). Without this, the error surfaces
+    immediately instead of retrying — forcing a manual "continue".
+    """
+    import openai
+
+    request = httpx.Request("POST", "https://example.test")
+    exc = openai.APIError(
+        "Worker exceeded time budget",
+        request=request,
+        body={"error": {"message": "Worker exceeded time budget"}},
+    )
+    assert type(exc) is openai.APIError
+    assert not isinstance(exc, openai.APIStatusError)
+    assert not isinstance(exc, openai.APIConnectionError)
+    assert is_retryable_stream_error(exc) is True
+
+
 def test_stream_recovery_session_advances_early_retry_and_discards_holdback() -> None:
     session = StreamRecoverySession(provider_name="TEST", request_id="REQ")
 

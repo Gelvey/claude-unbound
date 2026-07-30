@@ -621,3 +621,71 @@ class TestProviderRateLimiter:
                 max_delay=0.1,
                 jitter=0,
             )
+
+    @pytest.mark.asyncio
+    async def test_execute_with_retry_succeeds_on_openai_in_stream_api_error(self):
+        """A base openai.APIError (in-stream {"error":...} event) is retried.
+
+        Cloudflare Workers AI emits an error object mid-stream on transient
+        worker failures; the OpenAI SDK raises the *base* APIError (no
+        status_code, not APIStatusError/APIConnectionError). This used to
+        surface immediately (forcing a manual 'continue'); it must backoff-retry.
+        """
+        import openai
+        from httpx import Request
+
+        GlobalRateLimiter.reset_instance()
+        limiter = GlobalRateLimiter.get_instance(rate_limit=100, rate_window=60)
+
+        call_count = 0
+
+        async def in_stream_error_then_ok():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                exc = openai.APIError(
+                    "Worker exceeded time budget",
+                    request=Request("POST", "http://x"),
+                    body={"error": {"message": "Worker exceeded time budget"}},
+                )
+                assert type(exc) is openai.APIError
+                assert not isinstance(exc, openai.APIStatusError)
+                assert not isinstance(exc, openai.APIConnectionError)
+                raise exc
+            return "ok"
+
+        result = await limiter.execute_with_retry(
+            in_stream_error_then_ok,
+            max_retries=2,
+            base_delay=0.01,
+            max_delay=0.1,
+            jitter=0,
+        )
+        assert result == "ok"
+        assert call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_execute_with_retry_exhausts_openai_in_stream_api_error(self):
+        """When all in-stream APIError retries exhausted, last exception is raised."""
+        import openai
+        from httpx import Request
+
+        GlobalRateLimiter.reset_instance()
+        limiter = GlobalRateLimiter.get_instance(rate_limit=100, rate_window=60)
+
+        async def always_in_stream_error():
+            raise openai.APIError(
+                "Worker exceeded time budget",
+                request=Request("POST", "http://x"),
+                body={"error": {"message": "Worker exceeded time budget"}},
+            )
+
+        with pytest.raises(openai.APIError) as exc_info:
+            await limiter.execute_with_retry(
+                always_in_stream_error,
+                max_retries=2,
+                base_delay=0.01,
+                max_delay=0.1,
+                jitter=0,
+            )
+        assert type(exc_info.value) is openai.APIError

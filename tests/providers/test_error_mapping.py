@@ -117,12 +117,21 @@ class TestMapError:
         assert expect_substr in result.message.lower()
 
     def test_generic_api_error(self):
-        """openai.APIError -> APIError with original status_code."""
+        """Base openai.APIError (in-stream {"error":...} event) -> OverloadedError.
+
+        The base openai.APIError has no status_code (only APIStatusError does), so
+        it is the exact class the OpenAI SDK raises for in-stream error events —
+        a transient provider condition. Map to OverloadedError, not a generic
+        APIError, so exhausted-retry messaging reads as retryable.
+        """
         exc = _make_openai_error(
             openai.APIError, message="Bad gateway", status_code=502
         )
+        assert type(exc) is openai.APIError
+        assert getattr(exc, "status_code", None) is None
         result = map_error(exc)
-        assert isinstance(result, APIError)
+        assert isinstance(result, OverloadedError)
+        assert result.status_code == 529
 
     def test_unmapped_exception_passthrough(self):
         """Non-openai exceptions are returned as-is."""
@@ -253,6 +262,29 @@ def test_openai_api_connection_error_maps_to_overloaded():
     """
     exc = openai.APIConnectionError(request=Request("POST", "http://test"))
     assert not isinstance(exc, openai.APITimeoutError)
+    mapped = map_error(exc)
+    assert isinstance(mapped, OverloadedError)
+    assert mapped.status_code == 529
+
+
+def test_openai_in_stream_api_error_maps_to_overloaded():
+    """Base openai.APIError (in-stream {"error":...} event) -> OverloadedError.
+
+    The OpenAI SDK raises the *base* APIError (no status_code, not an
+    APIStatusError or APIConnectionError) when a provider emits an error
+    object mid-stream — Cloudflare Workers AI does this on transient worker
+    failures. Map to OverloadedError so the exhausted-retries message reads
+    as a transient condition instead of a generic 500.
+    """
+    exc = openai.APIError(
+        "Worker exceeded time budget",
+        request=Request("POST", "http://test"),
+        body={"error": {"message": "Worker exceeded time budget"}},
+    )
+    assert type(exc) is openai.APIError
+    assert not isinstance(exc, openai.APIStatusError)
+    assert not isinstance(exc, openai.APIConnectionError)
+    assert getattr(exc, "status_code", None) is None
     mapped = map_error(exc)
     assert isinstance(mapped, OverloadedError)
     assert mapped.status_code == 529

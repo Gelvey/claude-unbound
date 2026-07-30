@@ -291,6 +291,11 @@ def map_error(
         # failures. Map to OverloadedError so the exhausted-retries message
         # reads as a retryable condition instead of a generic 500.
         return OverloadedError(message, raw_error=str(e))
+    if type(e) is openai.APIError:
+        # In-stream SSE error event (base APIError, no status_code) raised by the
+        # OpenAI SDK when a provider emits an {"error": ...} object mid-stream.
+        # Treat as transient so the exhausted-retries message reads as retryable.
+        return OverloadedError(message, raw_error=str(e))
     if isinstance(e, openai.APIError):
         return APIError(
             message, status_code=getattr(e, "status_code", 500), raw_error=str(e)
