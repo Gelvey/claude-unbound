@@ -51,6 +51,14 @@ def _extract_sandbox_json(text: str) -> str:
     return text[start:end]
 
 
+def _extract_perms_json(text: str) -> str:
+    """Pull the PERMS_JSON single-quoted literal out of the script."""
+    marker = "PERMS_JSON='"
+    start = text.index(marker) + len(marker)
+    end = text.index("'", start)
+    return text[start:end]
+
+
 # ---------------------------------------------------------------------------
 # Syntax
 # ---------------------------------------------------------------------------
@@ -175,6 +183,55 @@ def test_setup_gateway_emits_sandbox_into_managed_json() -> None:
     # then inferenceModels / managedMcpServers are layered on via jq pipes.
     assert text.count('--argjson sandbox "$SANDBOX_JSON"') >= 1
     assert text.count("sandbox: $sandbox") >= 1
+
+
+# ---------------------------------------------------------------------------
+# Web-research permissions (WebFetch / WebSearch)
+#
+# Web research uses the WebFetch/WebSearch tools, which are gated by
+# permission rules — NOT by the Bash sandbox's network.allowedDomains (that
+# only covers Bash subprocess egress). So the managed settings must carry a
+# permissions.allow list so the desktop can visit websites for research
+# without prompting on every fetch.
+# ---------------------------------------------------------------------------
+def test_setup_gateway_allows_web_research() -> None:
+    """PERMS_JSON allows WebFetch to any domain plus WebSearch."""
+    text = _script_text()
+    perms = json.loads(_extract_perms_json(text))
+    allow = perms["allow"]
+    # WebFetch(domain:*) matches every domain (== bare WebFetch), so the
+    # desktop can fetch any URL for research. WebSearch allows web search.
+    assert "WebFetch(domain:*)" in allow, (
+        "permissions.allow must include WebFetch(domain:*) so the desktop "
+        "can visit websites for research without per-domain prompts"
+    )
+    assert "WebSearch" in allow, (
+        "permissions.allow must include WebSearch for web research"
+    )
+
+
+def test_setup_gateway_threads_perms_into_managed_json() -> None:
+    """The base jq invocation threads the permissions block into the output."""
+    text = _script_text()
+    assert text.count('--argjson perms "$PERMS_JSON"') >= 1
+    assert text.count("permissions: $perms") >= 1
+
+
+def test_setup_gateway_check_detects_stale_permissions() -> None:
+    """do_check verifies the permissions.allow block so a stale managed file
+    missing it is detected and refreshed on the next setup-gateway.sh run."""
+    text = _script_text()
+    body = _extract_func(text, "do_check() {")
+    # do_check compares the stored permissions.allow against PERMS_JSON's
+    # .allow, so a stale file (pre-permissions) fails --check and gets
+    # rewritten instead of being left in place.
+    assert ".permissions.allow" in body, (
+        "do_check must verify permissions.allow so a stale managed file "
+        "missing the web-research permissions is detected and refreshed"
+    )
+    assert "$PERMS_JSON" in body, (
+        "do_check must compare stored permissions against PERMS_JSON"
+    )
 
 
 # ---------------------------------------------------------------------------

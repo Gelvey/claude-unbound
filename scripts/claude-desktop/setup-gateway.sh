@@ -205,6 +205,9 @@ BASE_URL="http://localhost:${PORT}"
 #     working directory).  Reads are unrestricted by default, so
 #     importing installed site-packages works wherever the venv lives.
 #   - network.allowedDomains: ["*"] — any website reachable, sandboxed.
+#     (Covers Bash subprocess egress only. WebFetch / WebSearch — the tools
+#     used for web research — are gated by permission rules, not the sandbox;
+#     see the PERMS_JSON block below.)
 #   - excludedCommands: `git`/`gh` run OUTSIDE the sandbox so the
 #     credential helper can reach the keyring (D-Bus Unix socket) and
 #     SSH keys — the sandbox proxy cannot proxy D-Bus.  `git *` matches
@@ -215,6 +218,29 @@ BASE_URL="http://localhost:${PORT}"
 # caches (e.g. ~/.cargo, ~/.gradle) to allowWrite as needed.
 # ---------------------------------------------------------------------------
 SANDBOX_JSON='{"enabled":true,"filesystem":{"allowWrite":["~/.cache/uv","~/.local/share/uv","~/.cache/pip","~/.npm","~/.local/share/pnpm","~/.pnpm-store","~/.cache/yarn","~/.yarn","~/.cache/ms-playwright","~/.cache/puppeteer"]},"network":{"allowedDomains":["*"]},"excludedCommands":["git","git *","gh","gh *"]}'
+
+# ---------------------------------------------------------------------------
+# Web-research permissions (WebFetch / WebSearch).
+#
+# Web research is NOT governed by the Bash sandbox above — the sandbox's
+# network.allowedDomains only covers Bash subprocess egress. The WebFetch
+# and WebSearch tools are built-in tools that fetch URLs / search the web
+# under their own permission boundary, independent of the sandbox. So even
+# with network.allowedDomains:["*"], the desktop cannot visit websites for
+# research unless a permission rule allows it.
+#
+# To make web research work by default (without prompting on every fetch),
+# we emit a managed permissions.allow list:
+#   WebFetch(domain:*)  — allow fetching any URL. The docs state
+#                        WebFetch(domain:*) "matches every domain and is
+#                        equivalent to a bare WebFetch rule."
+#   WebSearch           — allow web search.
+# Managed-settings permissions.allow is honored without a workspace trust
+# dialog (the file is root-owned/trusted), so this works on first launch.
+# Deny/ask rules elsewhere still take precedence (deny-first), but we emit
+# only an allow list here.
+# ---------------------------------------------------------------------------
+PERMS_JSON='{"allow":["WebFetch(domain:*)","WebSearch"]}'
 
 # ---------------------------------------------------------------------------
 # Resolve the managed-settings directory based on platform / variant.
@@ -348,6 +374,18 @@ do_check() {
             fi
         fi
 
+        # Verify the web-research permissions block is present — a stale file
+        # missing it means WebFetch/WebSearch would prompt (or fail) on every
+        # research fetch. Re-run setup-gateway.sh to refresh.
+        _stored_perms=""
+        _stored_perms="$(jq -c '.permissions.allow // []' "$MANAGED_FILE" 2>/dev/null || echo "[]")"
+        _expected_perms=""
+        _expected_perms="$(printf '%s' "$PERMS_JSON" | jq -c '.allow')"
+        if [ "$_stored_perms" != "$_expected_perms" ]; then
+            echo "not wired: permissions stale (expected WebFetch(*) + WebSearch allowed)"
+            exit 1
+        fi
+
         echo "wired: gateway=${BASE_URL}"
         exit 0
     else
@@ -453,13 +491,15 @@ do_write() {
         --arg url "$BASE_URL" \
         --arg key "$AUTH_TOKEN" \
         --argjson sandbox "$SANDBOX_JSON" \
+        --argjson perms "$PERMS_JSON" \
         '{
             inferenceProvider: "gateway",
             inferenceGatewayBaseUrl: $url,
             inferenceGatewayApiKey: $key,
             inferenceGatewayAuthScheme: "bearer",
             inferenceCredentialKind: "static",
-            sandbox: $sandbox
+            sandbox: $sandbox,
+            permissions: $perms
         }')"
 
     if [ -n "$MODELS_JSON" ]; then
@@ -505,6 +545,7 @@ do_write() {
     fi
     echo "  Managed file:     ${MANAGED_FILE}"
     echo "  Sandbox:          fs isolated, network *, git/gh excluded"
+    echo "  Web research:     WebFetch(*) + WebSearch allowed"
     echo ""
     echo "In gateway mode the desktop app does not prompt for a claude.ai"
     echo "login — the gateway credential is used instead.  Chat/Cowork tabs"
