@@ -273,6 +273,31 @@ SANDBOX_JSON='{"enabled":true,"filesystem":{"allowWrite":["~/.cache/uv","~/.loca
 PERMS_JSON='{"allow":["WebFetch(domain:*)","WebSearch"]}'
 
 # ---------------------------------------------------------------------------
+# Desktop tool egress — coworkEgressAllowedHosts.
+#
+# IMPORTANT: the Claude Desktop app does NOT honor the `sandbox` key above
+# (that's a Claude Code CLI managed-settings feature). The desktop's Cowork
+# and Code tabs gate tool egress (Bash, git, gh, npm, pip, WebFetch, ...) via
+# a top-level `coworkEgressAllowedHosts` array. Per the desktop configuration
+# reference: "When unset, only the inference endpoint is reachable from the
+# sandbox; the agent's package installs (pip/npm) and web fetches will fail
+# with a 403." That 403 is exactly what blocked `git push` to GitHub even
+# though sandbox.network.allowedDomains was ["*"].
+#
+# The desktop ignores excludedCommands too (a CLI-only field), so git/gh
+# cannot be exempted individually — egress must be opened via this list.
+# It accepts "*" (allow all), exact hostnames (api.github.com), and
+# wildcards (*.corp.com). IP literals and localhost always resolve.
+# Web Search is NOT gated by this list (it runs server-side at the
+# inference provider); WebFetch IS gated by it.
+#
+# We set ["*"] so the desktop can reach GitHub (git push, gh), package
+# registries (npm, pip), and any website for research — matching the
+# "network open" intent of the sandbox block above for CLI sessions.
+# ---------------------------------------------------------------------------
+EGRESS_JSON='["*"]'
+
+# ---------------------------------------------------------------------------
 # Resolve the managed-settings directory based on platform / variant.
 #   macOS (Darwin)         -> /Library/Application Support/Claude
 #   Linux unofficial        -> /etc/claude-desktop (backward compat)
@@ -423,6 +448,18 @@ do_check() {
             exit 1
         fi
 
+        # Verify desktop tool egress — without coworkEgressAllowedHosts the
+        # desktop's Cowork/Code tabs only reach the inference endpoint and
+        # every other tool egress (git push, gh, npm, pip, WebFetch) fails
+        # with HTTP 403. This is the desktop's egress gate (the `sandbox`
+        # key above is a CLI-only field the desktop ignores).
+        _stored_egress=""
+        _stored_egress="$(jq -c '.coworkEgressAllowedHosts // []' "$MANAGED_FILE" 2>/dev/null || echo "[]")"
+        if [ "$_stored_egress" != "$EGRESS_JSON" ]; then
+            echo "not wired: coworkEgressAllowedHosts stale (expected [\"*\"] for GitHub + research egress)"
+            exit 1
+        fi
+
         echo "wired: gateway=${BASE_URL}"
         exit 0
     else
@@ -529,6 +566,7 @@ do_write() {
         --arg key "$AUTH_TOKEN" \
         --argjson sandbox "$SANDBOX_JSON" \
         --argjson perms "$PERMS_JSON" \
+        --argjson egress "$EGRESS_JSON" \
         '{
             inferenceProvider: "gateway",
             inferenceGatewayBaseUrl: $url,
@@ -536,7 +574,8 @@ do_write() {
             inferenceGatewayAuthScheme: "bearer",
             inferenceCredentialKind: "static",
             sandbox: $sandbox,
-            permissions: $perms
+            permissions: $perms,
+            coworkEgressAllowedHosts: $egress
         }')"
 
     if [ -n "$MODELS_JSON" ]; then
@@ -591,6 +630,7 @@ do_write() {
     echo "  Managed file:     ${MANAGED_FILE}"
     echo "  Sandbox:          fs isolated, network *, git/gh excluded"
     echo "  Web research:     WebFetch(*) + WebSearch allowed"
+    echo "  Desktop egress:   coworkEgressAllowedHosts [\"*\"] (git push, gh, npm, pip)"
     echo ""
     echo "In gateway mode the desktop app does not prompt for a claude.ai"
     echo "login — the gateway credential is used instead.  Chat/Cowork tabs"

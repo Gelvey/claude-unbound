@@ -61,6 +61,14 @@ def _extract_perms_json(text: str) -> str:
     return text[start:end]
 
 
+def _extract_egress_json(text: str) -> str:
+    """Pull the EGRESS_JSON single-quoted literal out of the script."""
+    marker = "EGRESS_JSON='"
+    start = text.index(marker) + len(marker)
+    end = text.index("'", start)
+    return text[start:end]
+
+
 # ---------------------------------------------------------------------------
 # Syntax
 # ---------------------------------------------------------------------------
@@ -233,6 +241,48 @@ def test_setup_gateway_check_detects_stale_permissions() -> None:
     )
     assert "$PERMS_JSON" in body, (
         "do_check must compare stored permissions against PERMS_JSON"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Desktop tool egress (coworkEgressAllowedHosts)
+#
+# The desktop app does NOT honor the `sandbox` key (a Claude Code CLI field).
+# It gates Cowork/Code tab tool egress (Bash, git, gh, npm, pip, WebFetch)
+# via a top-level `coworkEgressAllowedHosts` array. When unset, only the
+# inference endpoint is reachable and every other egress fails with HTTP
+# 403 — the error that blocked `git push` to GitHub. ["*"] opens all hosts.
+# ---------------------------------------------------------------------------
+def test_setup_gateway_opens_desktop_egress() -> None:
+    """EGRESS_JSON sets coworkEgressAllowedHosts to ["*"] so the desktop can
+    reach GitHub, package registries, and any website for research."""
+    text = _script_text()
+    egress = json.loads(_extract_egress_json(text))
+    assert egress == ["*"], (
+        'coworkEgressAllowedHosts must be ["*"]: without it the desktop '
+        "only reaches the inference endpoint and git push / gh / npm / pip "
+        "fail with HTTP 403 (the `sandbox` key is ignored by the desktop)"
+    )
+
+
+def test_setup_gateway_threads_egress_into_managed_json() -> None:
+    """The base jq invocation threads coworkEgressAllowedHosts into the output."""
+    text = _script_text()
+    assert text.count('--argjson egress "$EGRESS_JSON"') >= 1
+    assert text.count("coworkEgressAllowedHosts: $egress") >= 1
+
+
+def test_setup_gateway_check_detects_stale_egress() -> None:
+    """do_check verifies coworkEgressAllowedHosts so a stale managed file
+    missing it (the 403-on-git-push state) is detected and refreshed."""
+    text = _script_text()
+    body = _extract_func(text, "do_check() {")
+    assert ".coworkEgressAllowedHosts" in body, (
+        "do_check must verify coworkEgressAllowedHosts so a stale file that "
+        "would block git push / gh / npm / pip with 403 is detected"
+    )
+    assert "$EGRESS_JSON" in body, (
+        "do_check must compare stored egress against EGRESS_JSON"
     )
 
 
