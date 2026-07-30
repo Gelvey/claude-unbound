@@ -34,7 +34,9 @@ def _helpers_text() -> str:
     """Extract the dotenv + curation helpers so they can be sourced in isolation."""
     text = _script_text()
     return (
-        _extract_func(text, "_env_val() {")
+        _extract_func(text, "_real_home() {")
+        + "\n"
+        + _extract_func(text, "_env_val() {")
         + "\n"
         + _extract_func(text, "_curated_models_json() {")
         + "\n"
@@ -341,6 +343,98 @@ def test_curated_models_json_empty_without_model(tmp_path: Path) -> None:
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "result=[]"
+
+
+def test_real_home_resolves_sudo_user(tmp_path: Path) -> None:
+    """_real_home returns the invoking user's home under sudo, not /root.
+
+    setup-gateway.sh is run with `sudo bash ...`; sudo resets $HOME to /root,
+    so a naive "$HOME/.fcc/.env" would read /root/.fcc/.env (absent) and the
+    script would emit "no MODEL env var set". _real_home must resolve the
+    SUDO_USER's real home so the right ~/.fcc/.env is read.
+    """
+    import os
+
+    user = os.environ.get("USER", "gelvey")
+    wrapper = tmp_path / "run.sh"
+    wrapper.write_text(
+        _helpers_text() + '\necho "$(_real_home)"\n',
+        encoding="utf-8",
+    )
+    # Simulate sudo: SUDO_USER set, HOME=/root.
+    env = {"SUDO_USER": user, "HOME": "/root", "PATH": os.environ["PATH"]}
+    result = subprocess.run(
+        ["bash", str(wrapper)], capture_output=True, text=True, check=False, env=env
+    )
+    assert result.returncode == 0, result.stderr
+    real_home = result.stdout.strip()
+    # Must NOT be /root — it must be the invoking user's home.
+    assert real_home != "/root", (
+        "_real_home returned /root under SUDO_USER — the sudo/HOME bug that "
+        "left inferenceModels unwritten and the picker flooded with "
+        "auto-discovered official + open_router models"
+    )
+    assert real_home.startswith("/home/") or real_home.startswith("/Users/"), (
+        f"_real_home returned unexpected path {real_home!r}"
+    )
+
+
+def test_curated_models_found_under_sudo(tmp_path: Path) -> None:
+    """_curated_models_json finds a .env at the resolved real home even when
+    run under sudo (SUDO_USER set, HOME=/root). This is the real-world scenario
+    that produced the 'no MODEL env var set' warning and left inferenceModels
+    unwritten, flooding the picker with non-curated models."""
+    import os
+
+    user = os.environ.get("USER", "gelvey")
+    env_file = tmp_path / ".fcc" / ".env"
+    env_file.parent.mkdir(parents=True)
+    env_file.write_text(
+        "MODEL=open_router/deepseek/deepseek-v4-flash\n"
+        "MODEL_OPUS=cloudflare_ai/@cf/zai-org/glm-5.2\n"
+        "MODEL_SONNET=freebuff/mimo/mimo-v2.5-pro\n"
+        "MODEL_HAIKU=open_router/z-ai/glm-5.2\n",
+        encoding="utf-8",
+    )
+    wrapper = tmp_path / "run.sh"
+    wrapper.write_text(
+        _helpers_text() + f'\nFCC_ENV="{env_file}"\necho "$(_curated_models_json)"\n',
+        encoding="utf-8",
+    )
+    env = {"SUDO_USER": user, "HOME": "/root", "PATH": os.environ["PATH"]}
+    result = subprocess.run(
+        ["bash", str(wrapper)], capture_output=True, text=True, check=False, env=env
+    )
+    assert result.returncode == 0, result.stderr
+    ids = json.loads(result.stdout.strip())
+    assert len(ids) == 4, f"expected 4 curated models under sudo, got {len(ids)}: {ids}"
+    assert ids[0]["labelOverride"] == "Claude Unbound Default"
+
+
+def test_model_discovery_disabled_when_models_present() -> None:
+    """do_write sets modelDiscoveryEnabled:false when curated models are
+    present, so the provider's catalog (official Anthropic models, raw
+    gateway refs like open_router/...) can never leak into the picker
+    alongside the curated list. inferenceModels overrides the picker, but
+    making discovery explicitly off is belt-and-suspenders."""
+    text = _script_text()
+    body = _extract_func(text, "do_write() {")
+    assert ".modelDiscoveryEnabled = false" in body, (
+        "do_write must set modelDiscoveryEnabled:false alongside "
+        "inferenceModels so auto-discovery can never leak non-curated models"
+    )
+
+
+def test_check_detects_discovery_enabled() -> None:
+    """do_check rejects a managed file with modelDiscoveryEnabled != false
+    when curated models exist, so a stale file that re-enabled discovery is
+    detected and refreshed."""
+    text = _script_text()
+    body = _extract_func(text, "do_check() {")
+    assert "modelDiscoveryEnabled" in body, (
+        "do_check must verify modelDiscoveryEnabled is false so a stale "
+        "file that would leak non-curated models is detected"
+    )
 
 
 def test_no_proxy_fetch_fallback_for_inference_models() -> None:

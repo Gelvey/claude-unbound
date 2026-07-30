@@ -60,12 +60,42 @@ set -uo pipefail
 REPO_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 
 # ---------------------------------------------------------------------------
+# Real home directory — the invoking user's home, even under sudo.
+#
+# setup-gateway.sh is normally run with `sudo bash ...` because the managed
+# settings file must be root-owned. sudo resets $HOME to root's home
+# (/root), so reading "$HOME/.fcc/.env" under sudo would read /root/.fcc/.env
+# (absent) and the script would emit "no MODEL env var set" and write
+# managed settings WITHOUT inferenceModels — leaving the desktop's picker
+# to auto-discover official Anthropic + raw gateway models. _real_home
+# resolves the invoking user's home via SUDO_USER so the right ~/.fcc/.env
+# (and ~/.claude.json) is read regardless of how the script is elevated.
+#   _real_home   -> real home dir on stdout (falls back to $HOME)
+_real_home() {
+    local user="${SUDO_USER:-}"
+    if [ -n "$user" ] && [ "$user" != "root" ]; then
+        # Linux: getent passwd. macOS: dscl. Both quiet on miss.
+        local home
+        home="$(getent passwd "$user" 2>/dev/null | cut -d: -f6 || true)"
+        if [ -z "$home" ]; then
+            home="$(dscl . -read "/Users/$user" NFSHomeDirectory 2>/dev/null \
+                | awk '{print $2}' || true)"
+        fi
+        if [ -n "$home" ]; then
+            printf '%s\n' "$home"
+            return
+        fi
+    fi
+    printf '%s\n' "${HOME:-/root}"
+}
+
+# ---------------------------------------------------------------------------
 # Dotenv helpers — read KEY=VALUE from ~/.fcc/.env without `source`, since the
 # file may contain unquoted values or comments. Defined before first use so the
 # top-level env-reading below can reuse them.
 #   _env_val <key> [env_file]   -> value on stdout (empty if missing)
 # ---------------------------------------------------------------------------
-FCC_ENV="${HOME}/.fcc/.env"
+FCC_ENV="$(_real_home)/.fcc/.env"
 
 _env_val() {
     local key="$1"
@@ -144,7 +174,7 @@ _curated_models_json() {
 # JSON array on stdout, or nothing if ~/.claude.json has no mcpServers.
 # Args: [claude_json_path]
 _managed_mcp_servers_json() {
-    local claude_json="${1:-$HOME/.claude.json}"
+    local claude_json="${1:-$(_real_home)/.claude.json}"
     [ -f "$claude_json" ] || return 0
     command -v jq >/dev/null 2>&1 || return 0
     jq '
@@ -372,6 +402,13 @@ do_check() {
                 echo "not wired: inferenceModels stale (expected ${_count} curated models)"
                 exit 1
             fi
+            # Discovery must be off so the provider's catalog (official
+            # Anthropic models, raw gateway refs like open_router/...) can
+            # never leak into the picker alongside the curated list.
+            if [ "$(jq -r '.modelDiscoveryEnabled // true' "$MANAGED_FILE" 2>/dev/null)" != "false" ]; then
+                echo "not wired: modelDiscoveryEnabled not false (would leak non-curated models)"
+                exit 1
+            fi
         fi
 
         # Verify the web-research permissions block is present — a stale file
@@ -505,8 +542,16 @@ do_write() {
     if [ -n "$MODELS_JSON" ]; then
         # Shellcheck: MODELS_JSON is a valid JSON array string from jq.
         # We pass it via --argjson so jq parses it as JSON, not a string.
+        # Also disable auto-discovery: inferenceModels overrides the picker,
+        # but setting modelDiscoveryEnabled:false makes it explicit and
+        # guarantees the provider's model-list endpoint is never queried —
+        # so official Anthropic models and raw gateway models (e.g.
+        # open_router/...) can never leak into the picker. The docs say
+        # discovery skips automatically when inferenceModels is set; this
+        # is the belt-and-suspenders form ("turn off ... to use a fixed list").
         SETTINGS_JSON="$(printf '%s' "$SETTINGS_JSON" \
-            | jq --argjson models "$MODELS_JSON" '.inferenceModels = $models')"
+            | jq --argjson models "$MODELS_JSON" \
+               '.inferenceModels = $models | .modelDiscoveryEnabled = false')"
     fi
 
     if [ -n "$MCP_JSON" ] && [ "$MCP_JSON" != "[]" ]; then
