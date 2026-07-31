@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from html.parser import HTMLParser
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -12,6 +13,26 @@ from api.admin_config import MASKED_SECRET
 from api.admin_urls import local_admin_url
 from api.app import create_app
 from config.settings import Settings
+
+
+class _DataViewCollector(HTMLParser):
+    """Collect all data-view attribute values from <section> elements."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.data_views: list[str] = []
+        self.section_ids: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag != "section":
+            return
+        attr_dict = dict(attrs)
+        view = attr_dict.get("data-view")
+        if view is not None:
+            self.data_views.append(view)
+        element_id = attr_dict.get("id")
+        if element_id is not None:
+            self.section_ids.append(element_id)
 
 
 def _local_client(app):
@@ -138,6 +159,67 @@ def test_admin_static_defines_graphify_view():
     assert 'id="graphifySections"' in html
     assert "function loadGraphifyView" in script
     assert "function renderGraphifyView" in script
+
+
+def test_admin_static_index_html_has_expected_data_view_sections():
+    """Structural assertion: index.html must contain <section data-view=...> for each view.
+
+    Uses stdlib html.parser so a behavior-preserving frontend refactor (renaming
+    classes, reformatting whitespace) doesn't break CI while a removed or
+    renamed view does.
+    """
+    html_text = Path("api/admin_static/index.html").read_text(encoding="utf-8")
+    parser = _DataViewCollector()
+    parser.feed(html_text)
+
+    expected_views = {
+        "providers",
+        "model_config",
+        "messaging",
+        "openrouter_policy",
+        "cloudflare",
+        "mcp",
+        "freebuff",
+        "graphify",
+        "diagnostics",
+    }
+    assert set(parser.data_views) == expected_views, (
+        f"data-view mismatch: got {sorted(parser.data_views)}, "
+        f"expected {sorted(expected_views)}"
+    )
+
+    # Each view section should have a matching id="view-<name>"
+    expected_section_ids = {f"view-{v}" for v in expected_views}
+    assert set(parser.section_ids) == expected_section_ids, (
+        f"section id mismatch: got {sorted(parser.section_ids)}, "
+        f"expected {sorted(expected_section_ids)}"
+    )
+
+    # Containers referenced by JS (containerId) must exist as element ids
+    expected_container_ids = {
+        "providersSections",
+        "openrouterPolicySections",
+        "cloudflareSections",
+        "mcpSections",
+        "graphifySections",
+    }
+    # Re-parse to collect ALL element ids (not just <section>)
+    all_ids: list[str] = []
+
+    class _IdCollector(HTMLParser):
+        def handle_starttag(
+            self, tag: str, attrs: list[tuple[str, str | None]]
+        ) -> None:
+            attr_dict = dict(attrs)
+            element_id = attr_dict.get("id")
+            if element_id is not None:
+                all_ids.append(element_id)
+
+    id_collector = _IdCollector()
+    id_collector.feed(html_text)
+    assert expected_container_ids <= set(all_ids), (
+        f"Missing container ids: {expected_container_ids - set(all_ids)}"
+    )
 
 
 def test_admin_static_serves_favicon_svg(monkeypatch, tmp_path):

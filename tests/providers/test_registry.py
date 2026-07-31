@@ -7,6 +7,7 @@ import pytest
 from config.nim import NimSettings
 from config.provider_catalog import PROVIDER_CATALOG, ZAI_DEFAULT_BASE
 from config.provider_ids import SUPPORTED_PROVIDER_IDS
+from config.settings import Settings
 from providers.cerebras import CerebrasProvider
 from providers.codestral import CodestralProvider
 from providers.deepseek import DeepSeekProvider
@@ -33,53 +34,35 @@ from providers.zai import ZaiProvider
 
 
 def _make_settings(**overrides):
-    mock = MagicMock()
-    mock.model = "nvidia_nim/meta/llama3"
-    mock.provider_type = "nvidia_nim"
-    mock.nvidia_nim_api_key = "test_key"
-    mock.open_router_api_key = "test_openrouter_key"
-    mock.mistral_api_key = "test_mistral_key"
-    mock.codestral_api_key = "test_codestral_key"
-    mock.deepseek_api_key = "test_deepseek_key"
-    mock.wafer_api_key = "test_wafer_key"
-    mock.opencode_api_key = "test_opencode_key"
-    mock.zai_api_key = "test_zai_key"
-    mock.lm_studio_base_url = "http://localhost:1234/v1"
-    mock.llamacpp_base_url = "http://localhost:8080/v1"
-    mock.ollama_base_url = "http://localhost:11434"
-    mock.nvidia_nim_proxy = ""
-    mock.open_router_proxy = ""
-    mock.lmstudio_proxy = ""
-    mock.llamacpp_proxy = ""
-    mock.mistral_proxy = ""
-    mock.codestral_proxy = ""
-    mock.kimi_proxy = ""
-    mock.kimi_api_key = "test_kimi_key"
-    mock.wafer_proxy = ""
-    mock.opencode_proxy = ""
-    mock.opencode_go_proxy = ""
-    mock.zai_proxy = ""
-    mock.fireworks_proxy = ""
-    mock.fireworks_api_key = "test_fireworks_key"
-    mock.gemini_api_key = ""
-    mock.gemini_proxy = ""
-    mock.groq_api_key = ""
-    mock.groq_proxy = ""
-    mock.cerebras_api_key = ""
-    mock.cerebras_proxy = ""
-    mock.provider_rate_limit = 40
-    mock.provider_rate_window = 60
-    mock.provider_max_concurrency = 5
-    mock.http_read_timeout = 300.0
-    mock.http_write_timeout = 10.0
-    mock.http_connect_timeout = 10.0
-    mock.enable_model_thinking = True
-    mock.prompt_cache_key_provider_set.return_value = frozenset()
-    mock.provider_http2 = False
-    mock.nim = NimSettings()
-    for key, value in overrides.items():
-        setattr(mock, key, value)
-    return mock
+    """Build a real Settings instance with test defaults and per-test overrides.
+
+    Using the real Settings class (instead of a MagicMock) ensures that a new
+    Settings field surfaces as a test failure rather than being silently
+    swallowed by a mock that accepts any attribute.
+    """
+    defaults = {
+        "model": "nvidia_nim/meta/llama3",
+        "nvidia_nim_api_key": "test_key",
+        "open_router_api_key": "test_openrouter_key",
+        "mistral_api_key": "test_mistral_key",
+        "codestral_api_key": "test_codestral_key",
+        "deepseek_api_key": "test_deepseek_key",
+        "wafer_api_key": "test_wafer_key",
+        "opencode_api_key": "test_opencode_key",
+        "zai_api_key": "test_zai_key",
+        "kimi_api_key": "test_kimi_key",
+        "fireworks_api_key": "test_fireworks_key",
+        "gemini_api_key": "test_gemini_key",
+        "groq_api_key": "test_groq_key",
+        "cerebras_api_key": "test_cerebras_key",
+    }
+    defaults.update(overrides)
+    return Settings.model_construct(
+        None,
+        **defaults,
+        nim=NimSettings(),
+        prompt_cache_key_providers="",
+    )
 
 
 def test_importing_registry_does_not_eager_load_other_adapters() -> None:
