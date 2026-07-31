@@ -1,7 +1,6 @@
 """Message and tool format converters."""
 
 import json
-from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
@@ -98,7 +97,7 @@ def _tool_call_from_tool_use(block: Any) -> dict[str, Any]:
     }
     extra_content = get_block_attr(block, "extra_content", None)
     if isinstance(extra_content, dict) and extra_content:
-        tool_call["extra_content"] = deepcopy(extra_content)
+        tool_call["extra_content"] = extra_content
     return tool_call
 
 

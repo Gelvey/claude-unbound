@@ -9,7 +9,7 @@ import contextlib
 import tempfile
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
 from loguru import logger
 
@@ -21,6 +21,14 @@ from ..voice import PendingVoiceRegistry, VoiceTranscriptionService
 from .base import MessagingPlatform
 
 AUDIO_EXTENSIONS = (".ogg", ".mp4", ".mp3", ".wav", ".m4a")
+
+
+class _MessageChannel(Protocol):
+    """Structural type for a Discord channel that supports sending and fetching messages."""
+
+    async def send(self, **kwargs: Any) -> Any: ...
+    async def fetch_message(self, message_id: int) -> Any: ...
+
 
 _discord_module: Any = None
 try:
@@ -423,7 +431,7 @@ class DiscordPlatform(MessagingPlatform):
             raise RuntimeError(f"Channel {chat_id} not found")
 
         text = self._truncate(text)
-        channel = cast(Any, channel)
+        channel = cast("_MessageChannel", channel)
 
         discord = _get_discord()
         if reply_to:
@@ -450,7 +458,7 @@ class DiscordPlatform(MessagingPlatform):
             raise RuntimeError(f"Channel {chat_id} not found")
 
         discord = _get_discord()
-        channel = cast(Any, channel)
+        channel = cast("_MessageChannel", channel)
         try:
             msg = await channel.fetch_message(int(message_id))
         except discord.NotFound:
@@ -470,7 +478,7 @@ class DiscordPlatform(MessagingPlatform):
             return
 
         discord = _get_discord()
-        channel = cast(Any, channel)
+        channel = cast("_MessageChannel", channel)
         try:
             msg = await channel.fetch_message(int(message_id))
             await msg.delete()

@@ -166,7 +166,7 @@ class TelegramPlatform(MessagingPlatform):
 
                 self._connected = True
                 break
-            except (NetworkError, Exception) as e:
+            except (NetworkError, RetryAfter, TelegramError) as e:
                 if attempt < max_retries - 1:
                     wait_time = 2 * (attempt + 1)
                     logger.warning(
