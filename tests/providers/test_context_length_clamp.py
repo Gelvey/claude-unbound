@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import openai
-from httpx import Request, Response
+from httpx import HTTPStatusError, Request, Response
 
+from providers.error_mapping import attach_provider_error_body
 from providers.transports.openai_chat.context_length import (
     CONTEXT_CLAMP_MARGIN_TOKENS,
     clamped_max_tokens_from_context_length_error,
@@ -33,6 +34,26 @@ _CLOUDFLARE_413_AI_ERROR = (
     "(35000) exceeded this model context window limit (24000)"
 )
 
+# New Cloudflare shape (Workers AI): "maximum context length of N tokens" + a
+# total-requested line. Input is reported directly as "X tokens from the input
+# messages".
+_CLOUDFLARE_NEW_400 = (
+    "Requested token count exceeds the model's maximum context length of "
+    "256000 tokens. You requested a total of 256800 tokens: 224800 tokens "
+    "from the input messages and 32000 tokens for the completion."
+)
+
+# OpenRouter: "maximum context length is N tokens" (matched by the limit regex)
+# but the input count is only recoverable from the "you requested about N tokens"
+# total — 212745 total - 32000 output = 180745 input.
+_OPENROUTER_400 = (
+    "This endpoint's maximum context length is 131072 tokens. However, you "
+    "requested about 212745 tokens (122163 of text input, 58582 of tool "
+    "input, 32000 in the output). Please reduce the length of either one, "
+    "or use the context-compression plugin to compress your prompt "
+    "automatically."
+)
+
 
 def _bad_request(message: str) -> openai.BadRequestError:
     response = Response(status_code=400, request=Request("POST", "http://test"))
@@ -46,6 +67,18 @@ def _status_error(message: str, status_code: int) -> openai.APIStatusError:
     return openai.APIStatusError(
         message, response=response, body={"error": {"message": message}}
     )
+
+
+def _httpx_status_error(message: str, status_code: int) -> HTTPStatusError:
+    """An httpx error with the body attached the way the Anthropic transport does."""
+    response = Response(
+        status_code=status_code,
+        request=Request("POST", "http://test"),
+        content=message.encode("utf-8"),
+    )
+    error = HTTPStatusError(message, request=response.request, response=response)
+    attach_provider_error_body(error, message.encode("utf-8"))
+    return error
 
 
 def test_parses_cloudflare_input_tokens_shape() -> None:
@@ -174,4 +207,71 @@ def test_cloudflare_provider_retry_hook_clamps() -> None:
     retry = provider._get_retry_request_body(_bad_request(_CLOUDFLARE_400), body)
     assert retry is not None
     assert retry["max_tokens"] == 32768 - 769 - CONTEXT_CLAMP_MARGIN_TOKENS
+    assert provider._get_retry_request_body(RuntimeError("nope"), body) is None
+
+
+def test_parses_new_cloudflare_of_form_and_input_messages() -> None:
+    # 256000 - 224800 - margin
+    clamped = clamped_max_tokens_from_context_length_error(_CLOUDFLARE_NEW_400, 32000)
+    assert clamped == 256000 - 224800 - CONTEXT_CLAMP_MARGIN_TOKENS
+
+
+def test_parses_openrouter_total_requested_fallback() -> None:
+    # input = 212745 total - 32000 output = 180745; 180745 > 131072 limit ->
+    # prompt alone fills the window -> unfixable by clamping -> None.
+    assert clamped_max_tokens_from_context_length_error(_OPENROUTER_400, 32000) is None
+
+
+def test_openrouter_total_fallback_clamps_when_input_under_limit() -> None:
+    # Borderline OpenRouter case: input (100000) is below the 131072 limit but
+    # input + max_tokens (132000) exceeds it. total = 132000; clamp must lower
+    # max_tokens, not raise it.
+    text = (
+        "This endpoint's maximum context length is 131072 tokens. However, you "
+        "requested about 132000 tokens (100000 of text input, 32000 in the output)."
+    )
+    clamped = clamped_max_tokens_from_context_length_error(text, 32000)
+    assert clamped == 131072 - 100000 - CONTEXT_CLAMP_MARGIN_TOKENS
+    assert clamped < 32000  # the clamp must actually lower max_tokens
+
+
+def test_retry_body_clamps_new_cloudflare_httpx_error() -> None:
+    body = {"model": "m", "max_tokens": 32000, "messages": []}
+    retry = context_length_clamped_retry_body(
+        _httpx_status_error(_CLOUDFLARE_NEW_400, 400), body
+    )
+    assert retry is not None
+    assert retry["max_tokens"] == 256000 - 224800 - CONTEXT_CLAMP_MARGIN_TOKENS
+    assert body["max_tokens"] == 32000  # original untouched
+
+
+def test_retry_body_rejects_httpx_500() -> None:
+    body = {"model": "m", "max_tokens": 32000}
+    assert (
+        context_length_clamped_retry_body(
+            _httpx_status_error(_CLOUDFLARE_NEW_400, 500), body
+        )
+        is None
+    )
+
+
+def test_openai_error_text_reads_fcc_provider_error_body_bytes() -> None:
+    error = _httpx_status_error(_CLOUDFLARE_NEW_400, 400)
+    text = openai_error_text(error)
+    assert "maximum context length of 256000 tokens" in text
+
+
+def test_openrouter_provider_retry_hook_clamps() -> None:
+    from providers.base import ProviderConfig
+    from providers.open_router.client import OpenRouterProvider
+
+    provider = OpenRouterProvider(
+        ProviderConfig(api_key="k", base_url="https://openrouter.ai/api/v1")
+    )
+    body = {"model": "m", "max_tokens": 32000, "messages": []}
+    retry = provider._get_retry_request_body(
+        _httpx_status_error(_CLOUDFLARE_NEW_400, 400), body
+    )
+    assert retry is not None
+    assert retry["max_tokens"] == 256000 - 224800 - CONTEXT_CLAMP_MARGIN_TOKENS
     assert provider._get_retry_request_body(RuntimeError("nope"), body) is None

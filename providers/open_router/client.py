@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Iterator
 from typing import Any
 
+from loguru import logger
+
 from core.anthropic import iter_provider_stream_error_sse_events
 from core.anthropic.native_messages_request import OpenRouterPolicySettings
 from core.anthropic.native_sse_block_policy import (
@@ -24,6 +26,7 @@ from providers.transports.anthropic_messages import (
     AnthropicMessagesTransport,
     StreamChunkMode,
 )
+from providers.transports.openai_chat import context_length_clamped_retry_body
 
 from .request import build_request_body
 
@@ -60,6 +63,23 @@ class OpenRouterProvider(AnthropicMessagesTransport):
             thinking_enabled=self._is_thinking_enabled(request, thinking_enabled),
             settings=self._settings,
         )
+
+    def _get_retry_request_body(self, error: Exception, body: dict) -> dict | None:
+        """Retry once with clamped ``max_tokens`` after a context-length 400.
+
+        OpenRouter enforces ``input + max_tokens <= context_window`` and 400s
+        instead of truncating, which breaks clients that send a large fixed
+        ``max_tokens`` (e.g. Claude Code subagents).
+        """
+        retry_body = context_length_clamped_retry_body(error, body)
+        if retry_body is not None:
+            logger.warning(
+                "OPENROUTER_STREAM: clamping max_tokens {} -> {} after "
+                "context-length error",
+                body.get("max_tokens"),
+                retry_body["max_tokens"],
+            )
+        return retry_body
 
     def _extract_model_ids_from_model_list_payload(
         self, payload: Any

@@ -159,6 +159,15 @@ class AnthropicMessagesTransport(BaseProvider):
             headers["anthropic-version"] = self.anthropic_version
         return headers
 
+    def _get_retry_request_body(self, error: Exception, body: dict) -> dict | None:
+        """Return a modified request body for one retry, or ``None``.
+
+        Providers that enforce ``input + max_tokens <= context_window`` (and
+        reject oversized requests with a 400 instead of truncating) override
+        this to clamp ``max_tokens`` after a context-length error.
+        """
+        return None
+
     def _build_request_body(
         self, request: Any, thinking_enabled: bool | None = None
     ) -> dict:

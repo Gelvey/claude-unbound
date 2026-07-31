@@ -21,8 +21,6 @@ from __future__ import annotations
 import json
 import re
 
-import openai
-
 # Safety margin against off-by-a-few token counting differences upstream.
 CONTEXT_CLAMP_MARGIN_TOKENS = 64
 
@@ -30,7 +28,7 @@ CONTEXT_CLAMP_MARGIN_TOKENS = 64
 _MIN_CLAMPED_MAX_TOKENS = 128
 
 _CONTEXT_LIMIT_RE = re.compile(
-    r"maximum context length is\s+(\d+)\s+tokens", re.IGNORECASE
+    r"maximum context length (?:is|of)\s+(\d+)\s+tokens", re.IGNORECASE
 )
 # Cloudflare AiError (HTTP 413): "estimated number of input and maximum output
 # tokens (56789) exceeded this model context window limit (24000)". Only the
@@ -41,21 +39,51 @@ _AI_ERROR_TOTAL_RE = re.compile(
     r"exceeded this model context window limit\s+\((\d+)\)",
     re.IGNORECASE,
 )
+# "you requested about 212745 tokens" (OpenRouter) or "You requested a total of
+# 256800 tokens" (Cloudflare). Reports the input+max_tokens total, so the input
+# count is recovered by subtracting the request's current ``max_tokens``.
+_TOTAL_REQUESTED_RE = re.compile(
+    r"you requested (?:a total of |about )?(\d+)\s+tokens", re.IGNORECASE
+)
 _INPUT_TOKENS_RES = (
     # Cloudflare / vLLM: "your prompt contains at least 769 input tokens"
     re.compile(r"(?:at least\s+)?(\d+)\s+input tokens", re.IGNORECASE),
     # OpenAI classic: "you requested 33224 tokens (1224 in the messages, ...)"
     re.compile(r"(\d+)\s+(?:tokens\s+)?in the messages", re.IGNORECASE),
+    # Cloudflare new shape: "224800 tokens from the input messages and ..."
+    re.compile(r"(\d+)\s+tokens from the input messages", re.IGNORECASE),
 )
 
 
 def openai_error_text(error: Exception) -> str:
-    """Combine ``str(error)`` with the structured error body when present."""
+    """Combine ``str(error)`` with the structured error body when present.
+
+    Works across both error shapes this gateway raises: ``openai.APIStatusError``
+    (carries a parsed ``.body``) and ``httpx.HTTPStatusError`` (the Anthropic
+    transport attaches the streamed error body to ``_fcc_provider_error_body``).
+    """
     text = str(error)
-    body = getattr(error, "body", None)
+    body: object = getattr(error, "body", None)
+    if body is None:
+        body = getattr(error, "_fcc_provider_error_body", None)
+    if isinstance(body, bytes | bytearray):
+        body = body.decode("utf-8", errors="replace")
     if body is not None:
-        text = f"{text} {json.dumps(body, default=str)}"
+        if isinstance(body, str):
+            text = f"{text} {body}"
+        else:
+            text = f"{text} {json.dumps(body, default=str)}"
     return text
+
+
+def _status_code(error: Exception) -> int | None:
+    """Return the HTTP status from an openai or httpx error, else ``None``."""
+    status = getattr(error, "status_code", None)
+    if isinstance(status, int):
+        return status
+    response = getattr(error, "response", None)
+    response_status = getattr(response, "status_code", None)
+    return response_status if isinstance(response_status, int) else None
 
 
 def _extract_input_tokens(error_text: str) -> int | None:
@@ -95,9 +123,18 @@ def _extract_limit_and_input_tokens(
     limit_match = _CONTEXT_LIMIT_RE.search(error_text)
     if limit_match is not None:
         input_tokens = _extract_input_tokens(error_text)
-        if input_tokens is None:
-            return None
-        return int(limit_match.group(1)), input_tokens
+        if input_tokens is not None:
+            return int(limit_match.group(1)), input_tokens
+        # OpenRouter/new-Cloudflare report only the input+max_tokens total
+        # ("you requested about N tokens"). Recover the input count by
+        # subtracting the request's current integer ``max_tokens``.
+        total_match = _TOTAL_REQUESTED_RE.search(error_text)
+        if total_match is not None and isinstance(current_max_tokens, int):
+            total_tokens = int(total_match.group(1))
+            input_tokens = total_tokens - current_max_tokens
+            if input_tokens > 0:
+                return int(limit_match.group(1)), input_tokens
+        return None
 
     ai_error_match = _AI_ERROR_TOTAL_RE.search(error_text)
     if ai_error_match is None:
@@ -113,11 +150,10 @@ def _extract_limit_and_input_tokens(
 
 def context_length_clamped_retry_body(error: Exception, body: dict) -> dict | None:
     """Return a shallow copy of ``body`` with clamped ``max_tokens``, or ``None``."""
-    # 400: vLLM/OpenAI-style context-length errors.
+    # 400: vLLM/OpenAI-style context-length errors (openai.BadRequestError or
+    # httpx.HTTPStatusError from the Anthropic transport).
     # 413: Cloudflare AiError context-window rejections (openai.APIStatusError).
-    if not isinstance(error, openai.BadRequestError) and getattr(
-        error, "status_code", None
-    ) not in (400, 413):
+    if _status_code(error) not in (400, 413):
         return None
     clamped = clamped_max_tokens_from_context_length_error(
         openai_error_text(error), body.get("max_tokens")

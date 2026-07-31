@@ -67,6 +67,7 @@ class AnthropicMessagesStreamRunner:
             transport,
             iter_stream_chunks=self.iter_stream_chunks,
         )
+        self._clamp_retry_attempted = False
 
     async def run(self) -> AsyncIterator[str]:
         """Stream response via a native Anthropic-compatible messages endpoint."""
@@ -159,6 +160,34 @@ class AnthropicMessagesStreamRunner:
                             tool_schemas_by_name(self._request)
                         )
                     )
+                    # Pre-stream context-length 400: retry once with clamped
+                    # max_tokens before entering the recovery state machine. A
+                    # 400 is not retryable there (FINAL_ERROR), so without this
+                    # the error surfaces even when the provider could accept a
+                    # smaller max_tokens.
+                    if (
+                        not stream_opened
+                        and not generated_output
+                        and not recovery_session.committed
+                        and not recovery_session.has_buffered
+                        and not self._clamp_retry_attempted
+                    ):
+                        retry_body = self._transport._get_retry_request_body(
+                            error, body
+                        )
+                        if retry_body is not None:
+                            self._clamp_retry_attempted = True
+                            body = retry_body
+                            if response is not None and not response.is_closed:
+                                await maybe_await_aclose(response)
+                            response = None
+                            state = self._transport._new_stream_state(
+                                self._request,
+                                thinking_enabled=thinking_enabled,
+                            )
+                            emitted_tracker = EmittedNativeSseTracker()
+                            sent_any_event = False
+                            continue
                     decision = recovery_session.advance_failure(
                         error,
                         stream_opened=stream_opened,
