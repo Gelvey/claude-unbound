@@ -8,13 +8,8 @@ import asyncio
 import contextlib
 import os
 import tempfile
-from pathlib import Path
-
-# Opt-in to future behavior for python-telegram-bot (retry_after as timedelta)
-# This must be set BEFORE importing telegram.error
-os.environ["PTB_TIMEDELTA"] = "1"
-
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
@@ -126,6 +121,12 @@ class TelegramPlatform(MessagingPlatform):
         """Initialize and connect to Telegram."""
         if not self.bot_token:
             raise ValueError("TELEGRAM_BOT_TOKEN is required")
+
+        # Opt-in to future behavior for python-telegram-bot (retry_after as
+        # timedelta). PTB reads this lazily when RetryAfter.retry_after is
+        # accessed, so setting it at start() — not import time — is sufficient
+        # and avoids a process-wide env mutation on module import.
+        os.environ["PTB_TIMEDELTA"] = "1"
 
         # Configure request with longer timeouts
         request = HTTPXRequest(

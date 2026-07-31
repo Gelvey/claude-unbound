@@ -1,9 +1,9 @@
 """Centralized configuration using Pydantic Settings."""
 
 import os
+import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
-from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -918,7 +918,29 @@ class Settings(BaseSettings):
     )
 
 
-@lru_cache
-def get_settings() -> Settings:
-    """Get cached settings instance."""
-    return Settings()
+class _SettingsCache:
+    """Thread-safe singleton holder for the resolved :class:`Settings`.
+
+    Replaces ``functools.lru_cache`` on ``get_settings``: the lock makes the
+    first-read atomic (two concurrent callers can't both build a ``Settings``)
+    and ``cache_clear`` swaps to ``None`` so the next call re-reads the
+    environment. Exposes ``cache_clear`` to preserve the prior
+    ``get_settings.cache_clear()`` API.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._value: Settings | None = None
+
+    def __call__(self) -> Settings:
+        with self._lock:
+            if self._value is None:
+                self._value = Settings()
+            return self._value
+
+    def cache_clear(self) -> None:
+        with self._lock:
+            self._value = None
+
+
+get_settings = _SettingsCache()
