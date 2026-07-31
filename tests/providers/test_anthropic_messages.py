@@ -1,6 +1,7 @@
 """Tests for the shared native Anthropic Messages transport."""
 
 from contextlib import asynccontextmanager
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -554,3 +555,114 @@ async def test_precommit_native_holdback_retries_without_leaking_partial(
     assert "hidden" not in event_text
     assert "visible" in event_text
     assert parse_sse_text(event_text)[-1].event == "message_stop"
+
+
+class StripBlocksProvider(AnthropicMessagesTransport):
+    """Test provider that opts into non-native block stripping."""
+
+    strip_non_native_blocks = True
+
+    def __init__(self, config: ProviderConfig):
+        super().__init__(
+            config,
+            provider_name="STRIP_TEST",
+            default_base_url="https://example.test/v1",
+        )
+
+    def _request_headers(self) -> dict[str, str]:
+        return {"Content-Type": "application/json"}
+
+
+def test_strip_non_native_blocks_default_is_false(provider_config):
+    provider = NativeProvider(provider_config)
+    assert provider.strip_non_native_blocks is False
+
+
+def test_strip_non_native_blocks_hook_strips_image_blocks(provider_config):
+    """When strip_non_native_blocks is True, image/document blocks are stripped."""
+    provider = StripBlocksProvider(provider_config)
+    body: dict[str, Any] = {
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "look"},
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": "abc",
+                        },
+                    },
+                ],
+            }
+        ]
+    }
+    provider._maybe_strip_non_native_blocks(body)
+    content = body["messages"][0]["content"]
+    block_types = [b["type"] for b in content]
+    assert "image" not in block_types
+    assert "text" in block_types
+
+
+def test_strip_non_native_blocks_hook_noop_when_disabled(provider_config):
+    """When strip_non_native_blocks is False, blocks are left untouched."""
+    provider = NativeProvider(provider_config)
+    body: dict[str, Any] = {
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "look"},
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": "abc",
+                        },
+                    },
+                ],
+            }
+        ]
+    }
+    provider._maybe_strip_non_native_blocks(body)
+    content = body["messages"][0]["content"]
+    block_types = [b["type"] for b in content]
+    assert "image" in block_types
+
+
+def test_strip_non_native_blocks_hook_preserves_tool_result(provider_config):
+    """tool_result blocks survive stripping; nested image blocks are removed."""
+    provider = StripBlocksProvider(provider_config)
+    body: dict[str, Any] = {
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "t1",
+                        "content": [
+                            {"type": "text", "text": "screenshot saved"},
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": "image/png",
+                                    "data": "abc",
+                                },
+                            },
+                        ],
+                    },
+                ],
+            }
+        ]
+    }
+    provider._maybe_strip_non_native_blocks(body)
+    tool_result: Any = body["messages"][0]["content"][0]
+    assert tool_result["type"] == "tool_result"
+    inner_types = [b["type"] for b in tool_result["content"]]
+    assert "image" not in inner_types
+    assert "text" in inner_types

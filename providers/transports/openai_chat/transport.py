@@ -151,8 +151,8 @@ class OpenAIChatTransport(BaseProvider):
             return await self._start_stream(body), body
         except Exception as error:
             if self._should_disable_stream_usage(error):
-                # Sticky per-provider opt-out: later requests skip the param too.
-                type(self).include_stream_usage = False
+                # Sticky per-instance opt-out: later requests skip the param too.
+                self.include_stream_usage = False
                 logger.warning(
                     "{}: upstream rejected stream_options; disabling include_usage",
                     self._provider_name,

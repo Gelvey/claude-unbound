@@ -16,6 +16,7 @@ from core.anthropic.native_sse_block_policy import (
     NativeSseBlockPolicyState,
     transform_native_sse_block_event,
 )
+from core.anthropic.non_native_blocks import strip_non_native_attachment_blocks
 from providers.base import (
     BaseProvider,
     ProviderConfig,
@@ -44,6 +45,10 @@ class AnthropicMessagesTransport(BaseProvider):
     """Base class for providers that stream from an Anthropic-compatible endpoint."""
 
     stream_chunk_mode: StreamChunkMode = "line"
+
+    # When True, image/document content blocks are stripped from the request
+    # body before sending (providers without vision/document support).
+    strip_non_native_blocks: bool = False
 
     def __init__(
         self,
@@ -127,6 +132,15 @@ class AnthropicMessagesTransport(BaseProvider):
             thinking_enabled=thinking_enabled,
         )
 
+    def _maybe_strip_non_native_blocks(self, body: dict) -> None:
+        """Strip image/document blocks when the provider cannot handle them."""
+        if not self.strip_non_native_blocks:
+            return
+        if "messages" in body:
+            body["messages"] = strip_non_native_attachment_blocks(
+                body["messages"], provider_name=self._provider_name
+            )
+
     def _merged_request_headers(
         self, extra_headers: dict[str, str] | None
     ) -> dict[str, str]:
@@ -197,17 +211,27 @@ class AnthropicMessagesTransport(BaseProvider):
         req_tag: str,
         extra_headers: dict[str, str] | None = None,
     ) -> httpx.Response:
-        """Send request and raise mapped HTTP errors before yielding body chunks."""
-        send_response = await self._send_stream_request(
-            body, extra_headers=extra_headers
-        )
-        if send_response.status_code != 200:
-            try:
-                await self._raise_for_status(send_response, req_tag=req_tag)
-            finally:
-                if not send_response.is_closed:
-                    await maybe_await_aclose(send_response)
-        return send_response
+        """Send request and raise mapped HTTP errors before yielding body chunks.
+
+        The initial upstream send is wrapped through the rate limiter's
+        ``execute_with_retry`` so that transient 429/5xx responses are retried
+        with backoff.  Callers (stream runner, recovery) must NOT double-wrap
+        this method with ``execute_with_retry`` — that would compound retries.
+        """
+
+        async def _send_and_validate() -> httpx.Response:
+            send_response = await self._send_stream_request(
+                body, extra_headers=extra_headers
+            )
+            if send_response.status_code != 200:
+                try:
+                    await self._raise_for_status(send_response, req_tag=req_tag)
+                finally:
+                    if not send_response.is_closed:
+                        await maybe_await_aclose(send_response)
+            return send_response
+
+        return await self._global_rate_limiter.execute_with_retry(_send_and_validate)
 
     def _emit_error_events(
         self,
