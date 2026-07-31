@@ -1,3 +1,7 @@
+from __future__ import annotations
+
+from collections.abc import Iterator
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -6,28 +10,23 @@ from fastapi.testclient import TestClient
 from api.app import create_app
 from providers.nvidia_nim import NvidiaNimProvider
 
-app = create_app()
-
-# Mock provider
-mock_provider = MagicMock(spec=NvidiaNimProvider)
-
 # Track stream_response calls for test_model_mapping
-_stream_response_calls: list = []
+_stream_response_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
 
 
-async def _mock_stream_response(*args, **kwargs):
+async def _mock_stream_response(*args: Any, **kwargs: Any) -> Any:
     """Minimal async generator for streaming tests."""
     _stream_response_calls.append((args, kwargs))
     yield "event: message_start\ndata: {}\n\n"
     yield "[DONE]\n\n"
 
 
-mock_provider.stream_response = _mock_stream_response
-
-
-@pytest.fixture(scope="module")
-def client():
-    """HTTP client with provider resolution stubbed; patch only for this file."""
+@pytest.fixture
+def client_and_provider() -> Iterator[tuple[TestClient, MagicMock]]:
+    """Function-scoped client and mock provider with provider resolution stubbed."""
+    mock_provider = MagicMock(spec=NvidiaNimProvider)
+    mock_provider.stream_response = _mock_stream_response
+    app = create_app(lifespan_enabled=False)
     with (
         patch("api.dependencies.resolve_provider", return_value=mock_provider),
         patch(
@@ -37,7 +36,14 @@ def client():
         patch("providers.registry.ProviderRegistry.start_model_list_refresh"),
         TestClient(app) as test_client,
     ):
-        yield test_client
+        yield test_client, mock_provider
+
+
+@pytest.fixture
+def client(client_and_provider: tuple[TestClient, MagicMock]) -> TestClient:
+    """Convenience fixture that returns only the test client."""
+    test_client, _ = client_and_provider
+    return test_client
 
 
 def test_root(client: TestClient):
@@ -97,7 +103,6 @@ def test_create_message_stream(client: TestClient):
 
 def test_create_message_accepts_system_role_messages(client: TestClient):
     """Create message accepts latest-client system messages."""
-    mock_provider.stream_response = _mock_stream_response
     _stream_response_calls.clear()
     payload = {
         "model": "claude-3-sonnet",
@@ -136,13 +141,14 @@ def test_model_mapping(client: TestClient):
     assert kwargs["thinking_enabled"] is True
 
 
-def test_error_fallbacks(client: TestClient):
+def test_error_fallbacks(client_and_provider: tuple[TestClient, MagicMock]):
     from providers.exceptions import (
         AuthenticationError,
         OverloadedError,
         RateLimitError,
     )
 
+    client, mock_provider = client_and_provider
     base_payload = {
         "model": "test",
         "messages": [{"role": "user", "content": "Hi"}],
@@ -181,8 +187,11 @@ def test_error_fallbacks(client: TestClient):
     mock_provider.stream_response = _mock_stream_response
 
 
-def test_generic_exception_returns_500(client: TestClient):
+def test_generic_exception_returns_500(
+    client_and_provider: tuple[TestClient, MagicMock],
+):
     """Non-ProviderError exceptions are caught and returned as HTTPException(500)."""
+    client, mock_provider = client_and_provider
 
     def _raise_runtime(*args, **kwargs):
         raise RuntimeError("unexpected crash")
@@ -201,8 +210,11 @@ def test_generic_exception_returns_500(client: TestClient):
     mock_provider.stream_response = _mock_stream_response
 
 
-def test_generic_exception_with_status_code(client: TestClient):
+def test_generic_exception_with_status_code(
+    client_and_provider: tuple[TestClient, MagicMock],
+):
     """Unexpected errors always map to HTTP 500 (ignore ad-hoc status_code attrs)."""
+    client, mock_provider = client_and_provider
 
     class ExceptionWithStatus(RuntimeError):
         def __init__(self, msg: str, status_code: int = 500):
@@ -226,8 +238,11 @@ def test_generic_exception_with_status_code(client: TestClient):
     mock_provider.stream_response = _mock_stream_response
 
 
-def test_generic_exception_empty_message_returns_non_empty_detail(client: TestClient):
+def test_generic_exception_empty_message_returns_non_empty_detail(
+    client_and_provider: tuple[TestClient, MagicMock],
+):
     """Exceptions with empty __str__ still return a readable HTTP detail."""
+    client, mock_provider = client_and_provider
 
     class SilentError(RuntimeError):
         def __str__(self):
@@ -264,9 +279,6 @@ def test_count_tokens_endpoint(client: TestClient):
 def test_stop_endpoint_no_handler_no_cli_503(client: TestClient):
     """POST /stop without handler or cli_manager returns 503."""
     # Ensure no handler or cli_manager on app state
-    if hasattr(app.state, "message_handler"):
-        delattr(app.state, "message_handler")
-    if hasattr(app.state, "cli_manager"):
-        delattr(app.state, "cli_manager")
+    # (function-scoped app starts clean, but clear defensively)
     response = client.post("/stop")
     assert response.status_code == 503
