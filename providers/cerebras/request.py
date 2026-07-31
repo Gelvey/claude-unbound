@@ -13,14 +13,7 @@ from loguru import logger
 from core.anthropic import ReasoningReplayMode, build_base_request_body
 from core.anthropic.conversion import OpenAIConversionError
 from providers.exceptions import InvalidRequestError
-
-
-def _normalize_max_completion_tokens(body: dict[str, Any]) -> None:
-    if "max_completion_tokens" in body:
-        body.pop("max_tokens", None)
-        return
-    if "max_tokens" in body and body["max_tokens"] is not None:
-        body["max_completion_tokens"] = body.pop("max_tokens")
+from providers.transports.openai_chat import normalize_max_completion_tokens
 
 
 def build_request_body(request_data: Any, *, thinking_enabled: bool) -> dict:
@@ -44,7 +37,7 @@ def build_request_body(request_data: Any, *, thinking_enabled: bool) -> dict:
     if isinstance(request_extra, dict) and request_extra:
         body["extra_body"] = dict(request_extra)
 
-    _normalize_max_completion_tokens(body)
+    normalize_max_completion_tokens(body)
 
     logger.debug(
         "CEREBRAS_REQUEST: conversion done model={} msgs={} tools={}",

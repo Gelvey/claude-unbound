@@ -93,7 +93,7 @@ class _SpyAsyncClient(httpx.AsyncClient):
 def _spy_async_client():
     _SpyAsyncClient.calls = []
     with patch(
-        "providers.transports.openai_chat.transport.httpx.AsyncClient",
+        "providers.base.httpx.AsyncClient",
         _SpyAsyncClient,
     ):
         yield _SpyAsyncClient
@@ -126,7 +126,7 @@ class TestAnthropicMessagesTransportKeepAlive:
     @pytest.mark.asyncio
     async def test_client_created_with_keepalive_limits(self) -> None:
         with patch(
-            "providers.transports.anthropic_messages.transport.httpx.AsyncClient",
+            "providers.base.httpx.AsyncClient",
             wraps=httpx.AsyncClient,
         ) as spy:
             provider = _NativeProvider(_config())

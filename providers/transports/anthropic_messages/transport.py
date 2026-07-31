@@ -20,8 +20,7 @@ from core.anthropic.non_native_blocks import strip_non_native_attachment_blocks
 from providers.base import (
     BaseProvider,
     ProviderConfig,
-    provider_http_limits,
-    provider_http_timeout,
+    provider_http_client,
 )
 from providers.error_mapping import (
     extract_provider_error_detail,
@@ -50,6 +49,18 @@ class AnthropicMessagesTransport(BaseProvider):
     # body before sending (providers without vision/document support).
     strip_non_native_blocks: bool = False
 
+    # Auth scheme for upstream requests. ``"none"`` (the default) sends no
+    # auth header — used by local providers (LM Studio, llama.cpp, Ollama)
+    # that don't require credentials. Cloud providers set ``"bearer"``
+    # (Kimi/Fireworks/Wafer/OpenRouter), ``"x-api-key"`` (Z.ai), or
+    # ``"dual"`` (DeepSeek: x-api-key for messages, Bearer for model-list).
+    auth_scheme: str = "none"
+
+    # Anthropic API version sent on the messages request when set. Cloud
+    # providers that require the version header set this to ``"2023-06-01"``;
+    # local providers and DeepSeek leave it ``None``.
+    anthropic_version: str | None = None
+
     def __init__(
         self,
         config: ProviderConfig,
@@ -67,13 +78,7 @@ class AnthropicMessagesTransport(BaseProvider):
             rate_window=config.rate_window,
             max_concurrency=config.max_concurrency,
         )
-        self._client = httpx.AsyncClient(
-            base_url=self._base_url,
-            proxy=config.proxy or None,
-            timeout=provider_http_timeout(config),
-            limits=provider_http_limits(config),
-            http2=config.http2,
-        )
+        self._client = provider_http_client(config, base_url=self._base_url)
 
     async def cleanup(self) -> None:
         """Release HTTP client resources."""
@@ -101,7 +106,31 @@ class AnthropicMessagesTransport(BaseProvider):
 
     def _model_list_headers(self) -> dict[str, str]:
         """Return headers for model-list requests."""
+        headers = dict(self._auth_header(for_model_list=True))
+        if (version := self._model_list_anthropic_version()) is not None:
+            headers["anthropic-version"] = version
+        return headers
+
+    def _auth_header(self, *, for_model_list: bool = False) -> dict[str, str]:
+        """Return auth header(s) chosen by ``auth_scheme``.
+
+        ``dual`` uses x-api-key for messages and Bearer for model-listing
+        (DeepSeek). ``bearer`` always uses Bearer; ``x-api-key`` always uses
+        x-api-key; ``none`` sends nothing (local providers).
+        """
+        if self.auth_scheme == "bearer":
+            return {"Authorization": f"Bearer {self._api_key}"}
+        if self.auth_scheme == "dual":
+            if for_model_list:
+                return {"Authorization": f"Bearer {self._api_key}"}
+            return {"x-api-key": self._api_key}
+        if self.auth_scheme == "x-api-key":
+            return {"x-api-key": self._api_key}
         return {}
+
+    def _model_list_anthropic_version(self) -> str | None:
+        """Override to send ``anthropic-version`` on model-list requests too."""
+        return None
 
     def _extract_model_ids_from_model_list_payload(
         self, payload: Any
@@ -119,7 +148,16 @@ class AnthropicMessagesTransport(BaseProvider):
 
     def _request_headers(self) -> dict[str, str]:
         """Return headers for the native messages request."""
-        return {"Content-Type": "application/json"}
+        if self.auth_scheme == "none" and self.anthropic_version is None:
+            return {"Content-Type": "application/json"}
+        headers = {
+            "Accept": "text/event-stream",
+            "Content-Type": "application/json",
+        }
+        headers.update(self._auth_header())
+        if self.anthropic_version is not None:
+            headers["anthropic-version"] = self.anthropic_version
+        return headers
 
     def _build_request_body(
         self, request: Any, thinking_enabled: bool | None = None

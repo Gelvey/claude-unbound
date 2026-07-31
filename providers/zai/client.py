@@ -10,11 +10,12 @@ from providers.transports.anthropic_messages import AnthropicMessagesTransport
 
 from .request import build_request_body
 
-_ANTHROPIC_VERSION = "2023-06-01"
-
 
 class ZaiProvider(AnthropicMessagesTransport):
     """Z.ai using Anthropic-compatible Messages at api.z.ai/api/anthropic/v1."""
+
+    auth_scheme = "x-api-key"
+    anthropic_version = "2023-06-01"
 
     def __init__(self, config: ProviderConfig):
         super().__init__(
@@ -31,16 +32,6 @@ class ZaiProvider(AnthropicMessagesTransport):
             thinking_enabled=self._is_thinking_enabled(request, thinking_enabled),
         )
 
-    def _request_headers(self) -> dict[str, str]:
-        return {
-            "Accept": "text/event-stream",
-            "Content-Type": "application/json",
-            "x-api-key": self._api_key,
-            "anthropic-version": _ANTHROPIC_VERSION,
-        }
-
-    def _model_list_headers(self) -> dict[str, str]:
-        return {
-            "x-api-key": self._api_key,
-            "anthropic-version": _ANTHROPIC_VERSION,
-        }
+    def _model_list_anthropic_version(self) -> str | None:
+        """Z.ai requires ``anthropic-version`` on the model-list request too."""
+        return self.anthropic_version

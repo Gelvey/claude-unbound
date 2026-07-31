@@ -14,6 +14,7 @@ from loguru import logger
 from core.anthropic import ReasoningReplayMode, build_base_request_body
 from core.anthropic.conversion import OpenAIConversionError
 from providers.exceptions import InvalidRequestError
+from providers.transports.openai_chat import normalize_max_completion_tokens
 
 _GROQ_UNSUPPORTED_TOP_KEYS = frozenset({"logprobs", "logit_bias", "top_logprobs"})
 
@@ -30,14 +31,6 @@ def _strip_message_names(messages: Any) -> None:
 def _strip_unsupported_body_keys(body: dict[str, Any]) -> None:
     for key in _GROQ_UNSUPPORTED_TOP_KEYS:
         body.pop(key, None)
-
-
-def _normalize_max_completion_tokens(body: dict[str, Any]) -> None:
-    if "max_completion_tokens" in body:
-        body.pop("max_tokens", None)
-        return
-    if "max_tokens" in body and body["max_tokens"] is not None:
-        body["max_completion_tokens"] = body.pop("max_tokens")
 
 
 def _normalize_n_candidates(body: dict[str, Any]) -> None:
@@ -71,7 +64,7 @@ def build_request_body(request_data: Any, *, thinking_enabled: bool) -> dict:
 
     _strip_message_names(body.get("messages"))
     _strip_unsupported_body_keys(body)
-    _normalize_max_completion_tokens(body)
+    normalize_max_completion_tokens(body)
     _normalize_n_candidates(body)
 
     logger.debug(

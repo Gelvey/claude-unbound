@@ -404,9 +404,7 @@ async def test_get_provider_passes_proxy_from_settings():
     """Provider receives configured proxy and builds a proxied HTTP client."""
     with (
         patch("api.dependencies.get_settings") as mock_settings,
-        patch(
-            "providers.transports.openai_chat.transport.httpx.AsyncClient"
-        ) as mock_http_client,
+        patch("providers.base.httpx.AsyncClient") as mock_http_client,
         patch("providers.transports.openai_chat.transport.AsyncOpenAI") as mock_openai,
     ):
         mock_settings.return_value = _make_mock_settings(
@@ -428,9 +426,7 @@ async def test_get_provider_ignores_non_string_proxy_value():
     """Mock settings without proxy attrs should not fail provider construction."""
     with (
         patch("api.dependencies.get_settings") as mock_settings,
-        patch(
-            "providers.transports.openai_chat.transport.httpx.AsyncClient"
-        ) as mock_http_client,
+        patch("providers.base.httpx.AsyncClient") as mock_http_client,
         patch("providers.transports.openai_chat.transport.AsyncOpenAI") as mock_openai,
     ):
         mock_settings.return_value = _make_mock_settings(

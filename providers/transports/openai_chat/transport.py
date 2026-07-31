@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 from abc import abstractmethod
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from typing import Any
 
-import httpx
 from loguru import logger
 from openai import AsyncOpenAI
 
@@ -15,7 +14,7 @@ from core.anthropic.session_key import stable_session_key
 from providers.base import (
     BaseProvider,
     ProviderConfig,
-    provider_http_limits,
+    provider_http_client,
     provider_http_timeout,
 )
 from providers.error_mapping import (
@@ -63,12 +62,7 @@ class OpenAIChatTransport(BaseProvider):
         # Always create an explicit httpx client so keep-alive is controlled
         # here instead of falling back to httpx's 5s default expiry. Kept on
         # self so ancillary requests (e.g. model discovery) warm the same pool.
-        self._http_client = httpx.AsyncClient(
-            proxy=config.proxy or None,
-            timeout=provider_http_timeout(config),
-            limits=provider_http_limits(config),
-            http2=config.http2,
-        )
+        self._http_client = provider_http_client(config)
         self._client = AsyncOpenAI(
             api_key=self._api_key,
             base_url=self._base_url,
@@ -192,3 +186,37 @@ class OpenAIChatTransport(BaseProvider):
         )
         async for event in runner.run():
             yield event
+
+
+class GenericOpenAIChatProvider(OpenAIChatTransport):
+    """OpenAI-compatible provider wired by name, base URL, and request builder.
+
+    For providers whose only variation is the API URL and a request-body
+    builder (e.g. Groq, Cerebras) — eliminates the duplicated ``__init__``
+    and ``_build_request_body`` boilerplate those subclasses otherwise carry.
+    """
+
+    def __init__(
+        self,
+        config: ProviderConfig,
+        *,
+        provider_name: str,
+        base_url: str,
+        api_key: str,
+        request_builder: Callable[..., dict[str, Any]],
+    ):
+        super().__init__(
+            config,
+            provider_name=provider_name,
+            base_url=base_url,
+            api_key=api_key,
+        )
+        self._request_builder = request_builder
+
+    def _build_request_body(
+        self, request: Any, thinking_enabled: bool | None = None
+    ) -> dict[str, Any]:
+        return self._request_builder(
+            request,
+            thinking_enabled=self._is_thinking_enabled(request, thinking_enabled),
+        )

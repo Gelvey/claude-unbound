@@ -10,11 +10,13 @@ from providers.transports.anthropic_messages import AnthropicMessagesTransport
 from .request import build_request_body
 
 FIREWORKS_BASE_URL = "https://api.fireworks.ai/inference/v1"
-_ANTHROPIC_VERSION = "2023-06-01"
 
 
 class FireworksProvider(AnthropicMessagesTransport):
     """Fireworks AI using Anthropic-compatible Messages."""
+
+    auth_scheme = "bearer"
+    anthropic_version = "2023-06-01"
 
     def __init__(self, config: ProviderConfig):
         super().__init__(
@@ -32,14 +34,3 @@ class FireworksProvider(AnthropicMessagesTransport):
             request,
             thinking_enabled=thinking_enabled,
         )
-
-    def _request_headers(self) -> dict[str, str]:
-        return {
-            "Accept": "text/event-stream",
-            "Authorization": f"Bearer {self._api_key}",
-            "Content-Type": "application/json",
-            "anthropic-version": _ANTHROPIC_VERSION,
-        }
-
-    def _model_list_headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self._api_key}"}

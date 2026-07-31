@@ -27,13 +27,13 @@ from providers.transports.anthropic_messages import (
 
 from .request import build_request_body
 
-_ANTHROPIC_VERSION = "2023-06-01"
-
 
 class OpenRouterProvider(AnthropicMessagesTransport):
     """OpenRouter provider using the native Anthropic-compatible messages API."""
 
     stream_chunk_mode: StreamChunkMode = "event"
+    auth_scheme = "bearer"
+    anthropic_version = "2023-06-01"
 
     def __init__(
         self,
@@ -60,19 +60,6 @@ class OpenRouterProvider(AnthropicMessagesTransport):
             thinking_enabled=self._is_thinking_enabled(request, thinking_enabled),
             settings=self._settings,
         )
-
-    def _request_headers(self) -> dict[str, str]:
-        """Return OpenRouter's Anthropic-compatible messages headers."""
-        return {
-            "Accept": "text/event-stream",
-            "Authorization": f"Bearer {self._api_key}",
-            "Content-Type": "application/json",
-            "anthropic-version": _ANTHROPIC_VERSION,
-        }
-
-    def _model_list_headers(self) -> dict[str, str]:
-        """Return OpenRouter's OpenAI-compatible model-list headers."""
-        return {"Authorization": f"Bearer {self._api_key}"}
 
     def _extract_model_ids_from_model_list_payload(
         self, payload: Any

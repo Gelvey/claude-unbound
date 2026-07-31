@@ -64,6 +64,23 @@ def provider_http_limits(config: ProviderConfig) -> httpx.Limits:
     )
 
 
+def provider_http_client(
+    config: ProviderConfig, *, base_url: str = ""
+) -> httpx.AsyncClient:
+    """Build the shared httpx client for a provider transport.
+
+    Centralizes keep-alive/timeout/limits/proxy/http2 wiring so the
+    OpenAI-chat and Anthropic-messages transports construct identically.
+    """
+    return httpx.AsyncClient(
+        base_url=base_url,
+        proxy=config.proxy or None,
+        timeout=provider_http_timeout(config),
+        limits=provider_http_limits(config),
+        http2=config.http2,
+    )
+
+
 class BaseProvider(ABC):
     """Base class for all providers. Extend this to add your own."""
 

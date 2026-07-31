@@ -17,6 +17,8 @@ class DeepSeekProvider(AnthropicMessagesTransport):
     """DeepSeek using ``https://api.deepseek.com/anthropic`` (Anthropic Messages API)."""
 
     strip_non_native_blocks = True
+    # x-api-key for messages; Bearer for the OpenAI-format model-list endpoint.
+    auth_scheme = "dual"
 
     def __init__(self, config: ProviderConfig):
         super().__init__(
@@ -33,13 +35,6 @@ class DeepSeekProvider(AnthropicMessagesTransport):
             thinking_enabled=self._is_thinking_enabled(request, thinking_enabled),
         )
 
-    def _request_headers(self) -> dict[str, str]:
-        return {
-            "Accept": "text/event-stream",
-            "Content-Type": "application/json",
-            "x-api-key": self._api_key,
-        }
-
     async def _send_model_list_request(self) -> httpx.Response:
         """DeepSeek lists models from the OpenAI-format root, not /anthropic."""
         url = str(
@@ -48,6 +43,3 @@ class DeepSeekProvider(AnthropicMessagesTransport):
             )
         )
         return await self._client.get(url, headers=self._model_list_headers())
-
-    def _model_list_headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self._api_key}"}
