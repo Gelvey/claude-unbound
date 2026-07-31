@@ -16,6 +16,8 @@ from .request import build_request_body
 class DeepSeekProvider(AnthropicMessagesTransport):
     """DeepSeek using ``https://api.deepseek.com/anthropic`` (Anthropic Messages API)."""
 
+    strip_non_native_blocks = True
+
     def __init__(self, config: ProviderConfig):
         super().__init__(
             config,

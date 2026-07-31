@@ -75,6 +75,7 @@ class AnthropicMessagesStreamRunner:
         body = self._transport._build_request_body(
             self._request, thinking_enabled=self._thinking_enabled
         )
+        self._transport._maybe_strip_non_native_blocks(body)
         thinking_enabled = self._transport._is_thinking_enabled(
             self._request, self._thinking_enabled
         )
@@ -109,13 +110,10 @@ class AnthropicMessagesStreamRunner:
             while True:
                 stream_opened = False
                 try:
-                    response = (
-                        await self._transport._global_rate_limiter.execute_with_retry(
-                            self._transport._validated_stream_send,
-                            body,
-                            req_tag=req_tag,
-                            extra_headers=extra_headers,
-                        )
+                    response = await self._transport._validated_stream_send(
+                        body,
+                        req_tag=req_tag,
+                        extra_headers=extra_headers,
                     )
                     stream_opened = True
 

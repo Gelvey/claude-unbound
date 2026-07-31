@@ -10,9 +10,13 @@ from loguru import logger
 
 from config.constants import ANTHROPIC_DEFAULT_MAX_OUTPUT_TOKENS
 from core.anthropic.native_messages_request import dump_raw_messages_request
+from core.anthropic.non_native_blocks import strip_non_native_attachment_blocks
 from providers.exceptions import InvalidRequestError
 
 # Block types not supported on DeepSeek partial Anthropic-compatible API.
+# Note: "image" and "document" are stripped before validation by the
+# shared ``strip_non_native_attachment_blocks`` hook — they remain in this
+# set so that any blocks the stripper misses are caught here as a safety net.
 _UNSUPPORTED_MESSAGE_BLOCK_TYPES = frozenset(
     {
         "image",
@@ -22,90 +26,6 @@ _UNSUPPORTED_MESSAGE_BLOCK_TYPES = frozenset(
         "web_fetch_tool_result",
     }
 )
-
-# Block types silently stripped for DeepSeek since the content is typically
-# also provided via tool_result (e.g. Claude Code attaches PDFs as document
-# blocks alongside a Read tool_result containing the text).
-_STRIPPABLE_MESSAGE_BLOCK_TYPES = frozenset({"image", "document"})
-_OMITTED_ATTACHMENT_TEXT = (
-    "[attachment omitted: DeepSeek does not support image or document inputs]"
-)
-_OMITTED_ATTACHMENT_BLOCK = {"type": "text", "text": _OMITTED_ATTACHMENT_TEXT}
-
-
-def _strip_unsupported_attachment_blocks(messages: Any) -> Any:
-    """Remove image/document blocks that DeepSeek cannot process.
-
-    Claude Code sends PDFs as ``document`` blocks alongside a Read ``tool_result``
-    that already contains the extracted text. Stripping preserves the request
-    instead of failing with an unsupported block error.
-    """
-    if not isinstance(messages, list):
-        return messages
-
-    stripped: list[Any] = []
-    top_level_dropped: dict[str, int] = {}
-    nested_dropped: dict[str, int] = {}
-    placeholder_replacements = 0
-
-    for message in messages:
-        if not isinstance(message, dict):
-            stripped.append(message)
-            continue
-        content = message.get("content")
-        if not isinstance(content, list):
-            stripped.append(message)
-            continue
-
-        new_content: list[Any] = []
-        message_dropped_attachment = False
-        for block in content:
-            if isinstance(block, dict):
-                btype = block.get("type")
-                if btype in _STRIPPABLE_MESSAGE_BLOCK_TYPES:
-                    top_level_dropped[btype] = top_level_dropped.get(btype, 0) + 1
-                    message_dropped_attachment = True
-                    continue
-                if btype == "tool_result":
-                    inner = block.get("content")
-                    if isinstance(inner, list):
-                        filtered_inner: list[Any] = []
-                        for sub in inner:
-                            if (
-                                isinstance(sub, dict)
-                                and sub.get("type") in _STRIPPABLE_MESSAGE_BLOCK_TYPES
-                            ):
-                                sub_type = sub["type"]
-                                nested_dropped[sub_type] = (
-                                    nested_dropped.get(sub_type, 0) + 1
-                                )
-                                continue
-                            filtered_inner.append(sub)
-                        if not filtered_inner:
-                            filtered_inner = [_OMITTED_ATTACHMENT_BLOCK]
-                            placeholder_replacements += 1
-                        new_block = dict(block)
-                        new_block["content"] = filtered_inner
-                        new_content.append(new_block)
-                        continue
-            new_content.append(block)
-        if not new_content and message_dropped_attachment:
-            new_content = [_OMITTED_ATTACHMENT_BLOCK]
-            placeholder_replacements += 1
-        new_msg = dict(message)
-        new_msg["content"] = new_content
-        stripped.append(new_msg)
-
-    if top_level_dropped or nested_dropped:
-        logger.warning(
-            "DEEPSEEK_REQUEST: stripped unsupported attachment blocks "
-            "(top_level={} nested_in_tool_result={} placeholder_tool_results={}). "
-            "DeepSeek has no vision/document support; the model will not see this content.",
-            dict(top_level_dropped),
-            dict(nested_dropped),
-            placeholder_replacements,
-        )
-    return stripped
 
 
 def _is_server_listed_tool(tool: Mapping[str, Any]) -> bool:
@@ -392,7 +312,9 @@ def build_request_body(request_data: Any, *, thinking_enabled: bool) -> dict:
 
     data = dump_raw_messages_request(request_data)
     if "messages" in data:
-        data["messages"] = _strip_unsupported_attachment_blocks(data["messages"])
+        data["messages"] = strip_non_native_attachment_blocks(
+            data["messages"], provider_name="DEEPSEEK"
+        )
     _validate_deepseek_native_request_dict(data)
     data.pop("extra_body", None)
     _downgrade_forced_tool_choice(data)

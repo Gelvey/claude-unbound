@@ -102,7 +102,9 @@ class TestStreamOptionsIncludeUsage:
     @pytest.fixture(autouse=True)
     def _reset_include_stream_usage(self):
         yield
-        # Sticky opt-out mutates the provider class; restore for other tests.
+        # Sticky opt-out sets an instance attribute; the class default is never
+        # mutated, so no cleanup is needed.  Defensive: clear any class-level
+        # override that a stale test might have left behind.
         for cls in (CloudflareAiProvider,):
             if "include_stream_usage" in cls.__dict__:
                 del cls.include_stream_usage
@@ -191,3 +193,30 @@ class TestStreamOptionsIncludeUsage:
         ):
             await provider._create_stream({"model": "m"})
         assert provider.include_stream_usage is True
+
+    @pytest.mark.asyncio
+    async def test_disable_is_per_instance_not_class_level(self) -> None:
+        """Disabling stream_usage on one instance must not affect another."""
+        first = _provider()
+        second = _provider()
+        assert first.include_stream_usage is True
+        assert second.include_stream_usage is True
+
+        error = _bad_request("Unknown parameter: 'stream_options'.")
+        calls: list[dict[str, Any]] = []
+
+        async def fake_execute(_fn, **kwargs):
+            calls.append(kwargs)
+            if "stream_options" in kwargs:
+                raise error
+            return "stream"
+
+        with patch.object(
+            first._global_rate_limiter, "execute_with_retry", fake_execute
+        ):
+            await first._create_stream({"model": "m"})
+
+        assert first.include_stream_usage is False
+        # Second instance must still have the class default (True).
+        assert second.include_stream_usage is True
+        assert CloudflareAiProvider.include_stream_usage is True
