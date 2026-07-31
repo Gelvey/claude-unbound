@@ -106,14 +106,60 @@ def _require_non_empty_messages(messages: list[Any]) -> None:
         raise InvalidRequestError("messages cannot be empty")
 
 
-# Module-level mutable list so custom modules can contribute intercepts.
-_MESSAGE_INTERCEPTS: list[MessageIntercept] = []
-# Module-level mutable list so custom modules can contribute reroute strategies.
-_REROUTE_STRATEGIES: list[RerouteStrategy] = []
-# Module-level override slot; non-None value replaces ``get_token_count``.
-_MODULE_TOKEN_COUNTER: TokenCounter | None = None
-# Module-level system-prompt directives applied to every MessagesRequest.
-_MODULE_SYSTEM_DIRECTIVES: list[str] = []
+# Encapsulates the pipeline extension points (message intercepts, reroute
+# strategies, token-counter override, system directives) contributed by custom
+# modules. Access is mediated through accessor methods rather than direct
+# module-global mutation so the registry is a single owned object; the
+# ``add_*``/``get_*`` module-level functions below remain as thin compatibility
+# shims so external modules registering at import time keep working.
+class _PipelineRegistry:
+    __slots__ = (
+        "message_intercepts",
+        "reroute_strategies",
+        "system_directives",
+        "token_counter",
+    )
+
+    def __init__(self) -> None:
+        self.message_intercepts: list[MessageIntercept] = []
+        self.reroute_strategies: list[RerouteStrategy] = []
+        self.token_counter: TokenCounter | None = None
+        self.system_directives: list[str] = []
+
+    def add_message_intercepts(self, intercepts: Iterable[MessageIntercept]) -> None:
+        self.message_intercepts.extend(intercepts)
+
+    def remove_message_intercepts(self, intercepts: Iterable[MessageIntercept]) -> None:
+        for intercept in intercepts:
+            with contextlib.suppress(ValueError):
+                self.message_intercepts.remove(intercept)
+
+    def add_reroute_strategies(self, strategies: Iterable[RerouteStrategy]) -> None:
+        self.reroute_strategies.extend(strategies)
+
+    def remove_reroute_strategies(self, strategies: Iterable[RerouteStrategy]) -> None:
+        for strategy in strategies:
+            with contextlib.suppress(ValueError):
+                self.reroute_strategies.remove(strategy)
+
+    def get_reroute_strategies(self) -> list[RerouteStrategy]:
+        return list(self.reroute_strategies)
+
+    def set_token_counter(self, counter: TokenCounter | None) -> None:
+        self.token_counter = counter
+
+    def get_token_counter(self) -> TokenCounter | None:
+        return self.token_counter
+
+    def set_system_directives(self, directives: list[str]) -> None:
+        self.system_directives = list(directives)
+
+    def get_system_directives(self) -> list[str]:
+        return list(self.system_directives)
+
+
+# Process-wide registry singleton. Module-level for import-time registration.
+_registry = _PipelineRegistry()
 
 
 def _graphify_project_directive(project_path: str, tool_names: list[str]) -> str:
@@ -131,67 +177,61 @@ def add_message_intercepts(
 ) -> None:
     """Append intercepts to the runtime message-intercept list."""
 
-    _MESSAGE_INTERCEPTS.extend(intercepts)
+    _registry.add_message_intercepts(intercepts)
 
 
 def remove_message_intercepts(intercepts: Iterable[MessageIntercept]) -> None:
     """Remove previously appended intercepts (used by tests)."""
 
-    for intercept in intercepts:
-        with contextlib.suppress(ValueError):
-            _MESSAGE_INTERCEPTS.remove(intercept)
+    _registry.remove_message_intercepts(intercepts)
 
 
 def add_reroute_strategies(strategies: Iterable[RerouteStrategy]) -> None:
     """Append reroute strategies (run after model resolve, before long-context fallback)."""
 
-    _REROUTE_STRATEGIES.extend(strategies)
+    _registry.add_reroute_strategies(strategies)
 
 
 def remove_reroute_strategies(strategies: Iterable[RerouteStrategy]) -> None:
     """Remove previously appended reroute strategies (used by tests)."""
 
-    for strategy in strategies:
-        with contextlib.suppress(ValueError):
-            _REROUTE_STRATEGIES.remove(strategy)
+    _registry.remove_reroute_strategies(strategies)
 
 
 def get_reroute_strategies() -> list[RerouteStrategy]:
     """Return a copy of the registered reroute strategies."""
 
-    return list(_REROUTE_STRATEGIES)
+    return _registry.get_reroute_strategies()
 
 
 def set_module_token_counter(counter: TokenCounter | None) -> None:
     """Override the request token counter (last-registered wins)."""
 
-    global _MODULE_TOKEN_COUNTER
-    _MODULE_TOKEN_COUNTER = counter
+    _registry.set_token_counter(counter)
 
 
 def reset_module_token_counter() -> None:
     """Clear the module-supplied token counter (used by tests)."""
 
-    set_module_token_counter(None)
+    _registry.set_token_counter(None)
 
 
 def get_module_token_counter() -> TokenCounter | None:
     """Return the module-supplied token counter, or None if none registered."""
 
-    return _MODULE_TOKEN_COUNTER
+    return _registry.get_token_counter()
 
 
 def set_module_system_directives(directives: list[str]) -> None:
     """Replace the module-supplied system directives."""
 
-    global _MODULE_SYSTEM_DIRECTIVES
-    _MODULE_SYSTEM_DIRECTIVES = list(directives)
+    _registry.set_system_directives(directives)
 
 
 def get_module_system_directives() -> list[str]:
     """Return a copy of the module-supplied system directives."""
 
-    return list(_MODULE_SYSTEM_DIRECTIVES)
+    return _registry.get_system_directives()
 
 
 class ApiRequestPipeline:
@@ -223,7 +263,7 @@ class ApiRequestPipeline:
         self._message_intercepts: list[MessageIntercept] = [
             self._intercept_web_server_tool,
             self._intercept_local_optimization,
-            *_MESSAGE_INTERCEPTS,
+            *_registry.message_intercepts,
         ]
 
     def create_message(self, request_data: MessagesRequest) -> object:
