@@ -220,8 +220,9 @@ class ApiRequestPipeline:
         )
         # Start with the built-in intercepts, then any intercepts contributed by
         # custom modules. This is a copy so per-instance mutation is isolated.
+        # ``_intercept_web_server_tool`` is called separately in ``create_message``
+        # so the pre-computed ``input_tokens`` can be passed directly.
         self._message_intercepts: list[MessageIntercept] = [
-            self._intercept_web_server_tool,
             self._intercept_local_optimization,
             *_MESSAGE_INTERCEPTS,
         ]
@@ -232,10 +233,17 @@ class ApiRequestPipeline:
             _require_non_empty_messages(request_data.messages)
             routed = self._model_router.resolve_messages_request(request_data)
             routed = self._apply_module_reroutes(routed)
-            routed = self._maybe_reroute_long_context(routed)
+            input_tokens = self._token_counter(
+                routed.request.messages, routed.request.system, routed.request.tools
+            )
+            routed = self._maybe_reroute_long_context(routed, input_tokens=input_tokens)
             self._reject_unsupported_server_tools(routed)
 
-            intercepted = self._run_message_intercepts(routed)
+            intercepted = self._intercept_web_server_tool(
+                routed, input_tokens=input_tokens
+            )
+            if intercepted is None:
+                intercepted = self._run_message_intercepts(routed)
             if intercepted is not None:
                 return intercepted
 
@@ -246,6 +254,7 @@ class ApiRequestPipeline:
                     wire_api="messages",
                     raw_log_label="FULL_PAYLOAD",
                     raw_log_payload=routed.request.model_dump,
+                    input_tokens=input_tokens,
                 )
             )
         except ProviderError:
@@ -282,7 +291,10 @@ class ApiRequestPipeline:
             _require_non_empty_messages(response_request.messages)
             routed = self._model_router.resolve_messages_request(response_request)
             routed = self._apply_module_reroutes(routed)
-            routed = self._maybe_reroute_long_context(routed)
+            input_tokens = self._token_counter(
+                routed.request.messages, routed.request.system, routed.request.tools
+            )
+            routed = self._maybe_reroute_long_context(routed, input_tokens=input_tokens)
             self._reject_unsupported_server_tools(routed)
 
             streamed = self._provider_stream(
@@ -290,6 +302,7 @@ class ApiRequestPipeline:
                 wire_api="responses",
                 raw_log_label="FULL_RESPONSES_PAYLOAD",
                 raw_log_payload=lambda: request_payload,
+                input_tokens=input_tokens,
             )
             return openai_responses_sse_streaming_response(
                 self._responses_adapter.iter_sse_from_anthropic(
@@ -376,7 +389,10 @@ class ApiRequestPipeline:
                 ) from e
 
     def _maybe_reroute_long_context(
-        self, routed: RoutedMessagesRequest
+        self,
+        routed: RoutedMessagesRequest,
+        *,
+        input_tokens: int | None = None,
     ) -> RoutedMessagesRequest:
         """Reroute oversized requests to the configured long-context fallback model.
 
@@ -391,8 +407,12 @@ class ApiRequestPipeline:
         if routed.resolved.provider_model_ref == fallback_ref:
             return routed
 
-        estimated_tokens = self._token_counter(
-            routed.request.messages, routed.request.system, routed.request.tools
+        estimated_tokens = (
+            input_tokens
+            if input_tokens is not None
+            else self._token_counter(
+                routed.request.messages, routed.request.system, routed.request.tools
+            )
         )
         if estimated_tokens <= threshold:
             return routed
@@ -461,16 +481,20 @@ class ApiRequestPipeline:
         return None
 
     def _intercept_web_server_tool(
-        self, routed: RoutedMessagesRequest
+        self,
+        routed: RoutedMessagesRequest,
+        *,
+        input_tokens: int | None = None,
     ) -> object | None:
         if not self._settings.enable_web_server_tools:
             return None
         if not is_web_server_tool_request(routed.request):
             return None
 
-        input_tokens = self._token_counter(
-            routed.request.messages, routed.request.system, routed.request.tools
-        )
+        if input_tokens is None:
+            input_tokens = self._token_counter(
+                routed.request.messages, routed.request.system, routed.request.tools
+            )
         trace_event(
             stage="routing",
             event="api.optimization.web_server_tool",
@@ -511,6 +535,7 @@ class ApiRequestPipeline:
         wire_api: str,
         raw_log_label: str,
         raw_log_payload: Callable[[], Any],
+        input_tokens: int | None = None,
     ) -> AsyncIterator[str]:
         if self._settings.concise_output:
             append_system_directive(
@@ -564,11 +589,12 @@ class ApiRequestPipeline:
             # Lazy: full history dump is only materialized when opted in.
             logger.debug(f"{raw_log_label} [{{}}]: {{}}", request_id, raw_log_payload())
 
-        input_tokens = self._token_counter(
-            routed.request.messages,
-            routed.request.system,
-            routed.request.tools,
-        )
+        if input_tokens is None:
+            input_tokens = self._token_counter(
+                routed.request.messages,
+                routed.request.system,
+                routed.request.tools,
+            )
         return traced_async_stream(
             provider.stream_response(
                 routed.request,

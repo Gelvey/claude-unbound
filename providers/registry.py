@@ -6,7 +6,7 @@ import asyncio
 from collections import defaultdict
 from collections.abc import Callable, Iterable, MutableMapping
 from contextlib import suppress
-from typing import Any
+from typing import TYPE_CHECKING
 
 import httpx
 from loguru import logger
@@ -28,6 +28,9 @@ from providers.exceptions import (
 from providers.model_listing import ProviderModelInfo, model_infos_from_ids
 
 ProviderFactory = Callable[[ProviderConfig, Settings], BaseProvider]
+
+if TYPE_CHECKING:
+    from providers.freebuff.manager import FreebuffManager
 
 # Backwards-compatible name for the catalog (single source: ``config.provider_catalog``).
 PROVIDER_DESCRIPTORS: dict[str, ProviderDescriptor] = PROVIDER_CATALOG
@@ -213,7 +216,7 @@ def create_freebuff_manager(
     port: int | None = None,
     api_keys: list[str] | None = None,
     http_proxy: str = "",
-) -> Any:
+) -> FreebuffManager:
     from providers.freebuff.manager import FreebuffManager
 
     return FreebuffManager(
