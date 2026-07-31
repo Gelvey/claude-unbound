@@ -299,7 +299,9 @@ function renderProviders(providerStatus) {
 
     const title = document.createElement("div");
     title.className = "provider-title";
-    title.innerHTML = `<strong>${providerName(provider.provider_id)}</strong>`;
+    const strong = document.createElement("strong");
+    strong.textContent = providerName(provider.provider_id);
+    title.appendChild(strong);
 
     const pill = document.createElement("span");
     pill.className = `status-pill ${statusClass(provider.status)}`;
@@ -359,9 +361,7 @@ function renderSections(sections, fields) {
       sectionEl.className = "settings-section";
       sectionEl.id = `section-${section.id}`;
 
-      const heading = document.createElement("div");
-      heading.className = "section-heading";
-      heading.innerHTML = `<div><h3>${section.label}</h3><p>${section.description}</p></div>`;
+      const heading = sectionHeading(section.label, section.description);
       sectionEl.appendChild(heading);
 
       const grid = document.createElement("div");
@@ -491,6 +491,48 @@ function option(value, label) {
   return optionEl;
 }
 
+// Build a status card with safe DOM APIs (no innerHTML). ``metaLines`` is an
+// array of { text, style } where ``style`` is a static cssText string and
+// ``text`` is inserted via textContent (XSS-safe).
+function buildStatusCard(titleText, pillClass, pillText, metaLines = []) {
+  const card = document.createElement("article");
+  card.className = "provider-card";
+  const title = document.createElement("div");
+  title.className = "provider-title";
+  const strong = document.createElement("strong");
+  strong.textContent = titleText;
+  const pill = document.createElement("span");
+  pill.className = `status-pill ${pillClass}`;
+  pill.textContent = pillText;
+  title.append(strong, pill);
+  card.appendChild(title);
+  for (const m of metaLines) {
+    const div = document.createElement("div");
+    if (m.style) div.style.cssText = m.style;
+    div.textContent = m.text;
+    card.appendChild(div);
+  }
+  return card;
+}
+
+// Build a settings-section heading with safe DOM APIs. ``label`` and
+// ``description`` are inserted via textContent.
+function sectionHeading(label, description) {
+  const heading = document.createElement("div");
+  heading.className = "section-heading";
+  const inner = document.createElement("div");
+  const h3 = document.createElement("h3");
+  h3.textContent = label;
+  inner.appendChild(h3);
+  if (description) {
+    const p = document.createElement("p");
+    p.textContent = description;
+    inner.appendChild(p);
+  }
+  heading.appendChild(inner);
+  return heading;
+}
+
 function readFieldValue(input) {
   if (input.type === "checkbox") return input.checked ? "true" : "false";
   if (input.dataset.secret === "true" && input.dataset.configured === "true") {
@@ -552,9 +594,16 @@ function showValidationResult(result) {
 }
 
 async function apply() {
+  const values = allCurrentValues();
+  // Don't send the masked sentinel for unchanged secrets; the server preserves
+  // existing values. Defense-in-depth alongside the server-side skip in
+  // _target_values_with_updates.
+  for (const key of Object.keys(values)) {
+    if (values[key] === MASKED_SECRET) delete values[key];
+  }
   const result = await api("/admin/api/config/apply", {
     method: "POST",
-    body: JSON.stringify({ values: allCurrentValues() }),
+    body: JSON.stringify({ values }),
   });
   if (!result.applied) {
     showValidationResult(result);
@@ -678,8 +727,10 @@ async function loadMcpView() {
     config.sftp = sftpResult.sftp || {};
     renderMcpView(config, status);
   } catch (error) {
-    byId("mcpSections").innerHTML =
-      `<div class="message-area error">Failed to load MCP config: ${error.message}</div>`;
+    const errDiv = document.createElement("div");
+    errDiv.className = "message-area error";
+    errDiv.textContent = `Failed to load MCP config: ${error.message}`;
+    byId("mcpSections").replaceChildren(errDiv);
   }
 }
 
@@ -691,11 +742,26 @@ function renderMcpView(config, status) {
   const banner = document.createElement("div");
   banner.className = "mcp-status-banner";
   if (status.running) {
-    banner.innerHTML =
-      `<span class="status-pill ok">Running</span> MCP Router is active (${config.router_socket})`;
+    const okPill = document.createElement("span");
+    okPill.className = "status-pill ok";
+    okPill.textContent = "Running";
+    banner.appendChild(okPill);
+    banner.appendChild(
+      document.createTextNode(` MCP Router is active (${config.router_socket})`),
+    );
   } else {
-    banner.innerHTML =
-      `<span class="status-pill warn">Not running</span> MCP Router is not running. Start it from the launcher or run <code>bash scripts/mcp/start_mcp.sh</code>`;
+    const warnPill = document.createElement("span");
+    warnPill.className = "status-pill warn";
+    warnPill.textContent = "Not running";
+    banner.appendChild(warnPill);
+    banner.appendChild(
+      document.createTextNode(
+        " MCP Router is not running. Start it from the launcher or run ",
+      ),
+    );
+    const code = document.createElement("code");
+    code.textContent = "bash scripts/mcp/start_mcp.sh";
+    banner.appendChild(code);
   }
   container.appendChild(banner);
 
@@ -736,9 +802,7 @@ function renderMcpView(config, status) {
     const section = document.createElement("section");
     section.className = "settings-section";
 
-    const heading = document.createElement("div");
-    heading.className = "section-heading";
-    heading.innerHTML = `<div><h3>${label}</h3><p>${description}</p></div>`;
+    const heading = sectionHeading(label, description);
 
     const topAddBtn = document.createElement("button");
     topAddBtn.type = "button";
@@ -767,7 +831,9 @@ function renderMcpView(config, status) {
       const title = document.createElement("div");
       title.className = "provider-title";
       const displayName = isShared ? `[shared] ${name}` : name;
-      title.innerHTML = `<strong>${displayName}</strong>`;
+      const titleStrong = document.createElement("strong");
+      titleStrong.textContent = displayName;
+      title.appendChild(titleStrong);
 
       const pill = document.createElement("span");
       if (live) {
@@ -806,13 +872,13 @@ function renderMcpView(config, status) {
       deleteBtn.type = "button";
       deleteBtn.className = "ghost-button";
       deleteBtn.textContent = "Delete";
-      deleteBtn.addEventListener("click", () => {
+      wireTwoStepConfirm(deleteBtn, () => {
         const target = isShared
           ? mcpState.config.shared_servers
           : mcpState.config.servers;
         delete target[name];
-        saveMcpConfig();
-      });
+        return saveMcpConfig();
+      }, "Confirm Delete?");
 
       actions.append(editBtn, deleteBtn);
       card.appendChild(actions);
@@ -915,9 +981,25 @@ function renderSftpSection(config, container) {
   const banner = document.createElement("div");
   banner.className = "mcp-status-banner";
   if (sftp.enabled && sftp.host) {
-    banner.innerHTML = `<span class="status-pill ok">Enabled</span> SFTP configured: ${sftp.username || ""}@${sftp.host || ""}:${sftp.port || 22} &rarr; ${sftp.remote_file_path || ""}`;
+    const okPill = document.createElement("span");
+    okPill.className = "status-pill ok";
+    okPill.textContent = "Enabled";
+    banner.appendChild(okPill);
+    banner.appendChild(
+      document.createTextNode(
+        ` SFTP configured: ${sftp.username || ""}@${sftp.host || ""}:${sftp.port || 22} → ${sftp.remote_file_path || ""}`,
+      ),
+    );
   } else {
-    banner.innerHTML = `<span class="status-pill neutral">Not configured</span> Set up SFTP credentials to share MCP config across teammates.`;
+    const neutralPill = document.createElement("span");
+    neutralPill.className = "status-pill neutral";
+    neutralPill.textContent = "Not configured";
+    banner.appendChild(neutralPill);
+    banner.appendChild(
+      document.createTextNode(
+        " Set up SFTP credentials to share MCP config across teammates.",
+      ),
+    );
   }
   section.appendChild(banner);
 
@@ -1184,7 +1266,11 @@ function showSftpPreview(section, remoteConfig) {
 
   const header = document.createElement("div");
   header.className = "sftp-preview-header";
-  header.innerHTML = `<strong>Remote Backends (${names.length})</strong><span>Review before importing</span>`;
+  const headerStrong = document.createElement("strong");
+  headerStrong.textContent = `Remote Backends (${names.length})`;
+  const headerSpan = document.createElement("span");
+  headerSpan.textContent = "Review before importing";
+  header.append(headerStrong, headerSpan);
 
   const list = document.createElement("div");
   list.className = "sftp-preview-list";
@@ -1192,9 +1278,23 @@ function showSftpPreview(section, remoteConfig) {
     const srv = servers[name];
     const item = document.createElement("div");
     item.className = "provider-card";
-    item.innerHTML =
-      `<div class="provider-title"><strong>${name}</strong><span class="status-pill neutral">${srv.type || "stdio"}</span></div>` +
-      `<div class="provider-meta">${srv.type === "sse" || srv.type === "http" ? (srv.url || "") : (srv.command || "")} (port ${srv.port || "?"})</div>`;
+
+    const itemTitle = document.createElement("div");
+    itemTitle.className = "provider-title";
+    const itemStrong = document.createElement("strong");
+    itemStrong.textContent = name;
+    const typePill = document.createElement("span");
+    typePill.className = "status-pill neutral";
+    typePill.textContent = srv.type || "stdio";
+    itemTitle.append(itemStrong, typePill);
+
+    const itemMeta = document.createElement("div");
+    itemMeta.className = "provider-meta";
+    const endpoint =
+      srv.type === "sse" || srv.type === "http" ? (srv.url || "") : (srv.command || "");
+    itemMeta.textContent = `${endpoint} (port ${srv.port || "?"})`;
+
+    item.append(itemTitle, itemMeta);
     list.appendChild(item);
   });
 
@@ -1210,7 +1310,11 @@ function showSftpPreview(section, remoteConfig) {
   replaceBtn.type = "button";
   replaceBtn.className = "secondary-button";
   replaceBtn.textContent = "Replace All Local";
-  replaceBtn.addEventListener("click", () => sftpImport(section, "replace"));
+  wireTwoStepConfirm(
+    replaceBtn,
+    () => sftpImport(section, "replace"),
+    "Confirm Replace All?",
+  );
 
   actionRow.append(mergeBtn, replaceBtn);
   preview.append(header, list, actionRow);
@@ -1441,10 +1545,10 @@ function renderComposioSection(config, liveMap, container) {
     removeBtn.type = "button";
     removeBtn.className = "ghost-button composio-remove-btn";
     removeBtn.textContent = "Remove";
-    _wireComposioRemove(removeBtn, () => {
+    wireTwoStepConfirm(removeBtn, () => {
       delete config.servers.composio;
       return saveMcpConfig();
-    });
+    }, "Confirm Remove?");
 
     actions.append(testBtn, updateBtn, removeBtn);
     card.appendChild(actions);
@@ -1467,7 +1571,9 @@ function _findComposioShared(config) {
 }
 
 // Two-step confirm: first click arms the button, second click commits.
-function _wireComposioRemove(button, onConfirm) {
+// Reused for all one-click destructive actions (MCP delete, Graphify remove,
+// SFTP replace-all, Composio remove) to prevent accidental data loss.
+function wireTwoStepConfirm(button, onConfirm, confirmLabel = "Confirm?") {
   let armed = false;
   let resetTimer = null;
   let originalLabel = button.textContent;
@@ -1485,14 +1591,14 @@ function _wireComposioRemove(button, onConfirm) {
   button.addEventListener("click", async () => {
     if (!armed) {
       armed = true;
-      button.textContent = "Confirm Remove?";
+      button.textContent = confirmLabel;
       button.classList.add("armed");
       // Auto-disarm after 4s so an abandoned click doesn't linger.
       resetTimer = setTimeout(reset, 4000);
       return;
     }
     button.disabled = true;
-    button.textContent = "Removing...";
+    button.textContent = "Working...";
     try {
       await onConfirm();
     } finally {
@@ -1852,8 +1958,16 @@ function renderFreebuffView(status, health) {
   const methodInfo = status.method ? ` (${status.method})` : "";
   const portInfo = status.port ? ` on port ${status.port}` : "";
   const healthInfo = status.health && status.health !== "unknown" ? ` - ${status.health}` : "";
-  banner.innerHTML =
-    `<span class="status-pill ${runState}">${runLabel}</span> Freebuff2API${methodInfo}${portInfo}${healthInfo}`;
+  banner.innerHTML = "";
+  const runPill = document.createElement("span");
+  runPill.className = `status-pill ${runState}`;
+  runPill.textContent = runLabel;
+  banner.appendChild(runPill);
+  banner.appendChild(
+    document.createTextNode(
+      ` Freebuff2API${methodInfo}${portInfo}${healthInfo}`,
+    ),
+  );
   statusSection.appendChild(banner);
 
   // -- Action buttons --
@@ -1984,18 +2098,20 @@ function renderFreebuffView(status, health) {
   const credGrid = document.createElement("div");
   credGrid.className = "field-grid";
   const creds = status.credentials || {};
-  const credCard = document.createElement("article");
-  credCard.className = "provider-card";
   const credFound = creds.found;
-  const credPill = `<span class="status-pill ${credFound ? "ok" : "warn"}">${credFound ? `${creds.token_count} token(s)` : "Not found"}</span>`;
-  const credProfiles = creds.profiles && creds.profiles.length
-    ? `<div style="margin-top:4px;font-size:0.85em;opacity:0.8">Profiles: ${creds.profiles.join(", ")}</div>`
-    : "";
-  const credPath = creds.path
-    ? `<div style="margin-top:2px;font-size:0.8em;opacity:0.6">${creds.path}</div>`
-    : "";
-  credCard.innerHTML =
-    `<div class="provider-title"><strong>Freebuff CLI Tokens</strong>${credPill}</div>${credProfiles}${credPath}`;
+  const credPillClass = credFound ? "ok" : "warn";
+  const credPillText = credFound ? `${creds.token_count} token(s)` : "Not found";
+  const credMeta = [];
+  if (creds.profiles && creds.profiles.length) {
+    credMeta.push({
+      text: `Profiles: ${creds.profiles.join(", ")}`,
+      style: "margin-top:4px;font-size:0.85em;opacity:0.8",
+    });
+  }
+  if (creds.path) {
+    credMeta.push({ text: creds.path, style: "margin-top:2px;font-size:0.8em;opacity:0.6" });
+  }
+  const credCard = buildStatusCard("Freebuff CLI Tokens", credPillClass, credPillText, credMeta);
   credGrid.appendChild(credCard);
   credSection.appendChild(credGrid);
   statusSection.appendChild(credSection);
@@ -2012,40 +2128,49 @@ function renderFreebuffView(status, health) {
   binGrid.className = "field-grid";
   const bin = status.binary || {};
 
-  const dockerCard = document.createElement("article");
-  dockerCard.className = "provider-card";
   const dockerAvail = bin.docker_available;
-  dockerCard.innerHTML =
-    `<div class="provider-title"><strong>Docker</strong>` +
-    `<span class="status-pill ${dockerAvail ? "ok" : "neutral"}">${dockerAvail ? "Available" : "Not installed"}</span></div>` +
-    `<div style="margin-top:4px;font-size:0.85em;opacity:0.8">${bin.method === "docker" ? "Active deployment method" : "Primary method (pulls from ghcr.io/gelvey/freebuff2api:latest)"}</div>`;
+  const dockerCard = buildStatusCard(
+    "Docker",
+    dockerAvail ? "ok" : "neutral",
+    dockerAvail ? "Available" : "Not installed",
+    [
+      {
+        text:
+          bin.method === "docker"
+            ? "Active deployment method"
+            : "Primary method (pulls from ghcr.io/gelvey/freebuff2api:latest)",
+        style: "margin-top:4px;font-size:0.85em;opacity:0.8",
+      },
+    ],
+  );
   binGrid.appendChild(dockerCard);
 
-  const goCard = document.createElement("article");
-  goCard.className = "provider-card";
   const goAvail = bin.go_available;
-  goCard.innerHTML =
-    `<div class="provider-title"><strong>Go Build</strong>` +
-    `<span class="status-pill ${goAvail ? "ok" : "neutral"}">${goAvail ? "Available" : "Not installed"}</span></div>` +
-    `<div style="margin-top:4px;font-size:0.85em;opacity:0.8">${bin.method === "source" ? "Active deployment method" : "Fallback: build from source"}</div>`;
+  const goCard = buildStatusCard(
+    "Go Build",
+    goAvail ? "ok" : "neutral",
+    goAvail ? "Available" : "Not installed",
+    [
+      {
+        text:
+          bin.method === "source"
+            ? "Active deployment method"
+            : "Fallback: build from source",
+        style: "margin-top:4px;font-size:0.85em;opacity:0.8",
+      },
+    ],
+  );
   binGrid.appendChild(goCard);
 
   if (bin.binary_exists) {
-    const binCard = document.createElement("article");
-    binCard.className = "provider-card";
-    binCard.innerHTML =
-      `<div class="provider-title"><strong>Built Binary</strong>` +
-      `<span class="status-pill ok">Exists</span></div>` +
-      `<div style="margin-top:4px;font-size:0.85em;opacity:0.8">${bin.binary_path || ""}</div>`;
+    const binCard = buildStatusCard("Built Binary", "ok", "Exists", [
+      { text: bin.binary_path || "", style: "margin-top:4px;font-size:0.85em;opacity:0.8" },
+    ]);
     binGrid.appendChild(binCard);
   }
 
   if (bin.version) {
-    const verCard = document.createElement("article");
-    verCard.className = "provider-card";
-    verCard.innerHTML =
-      `<div class="provider-title"><strong>Version</strong>` +
-      `<span class="status-pill neutral">${bin.version}</span></div>`;
+    const verCard = buildStatusCard("Version", "neutral", bin.version);
     binGrid.appendChild(verCard);
   }
 
@@ -2065,8 +2190,6 @@ function renderFreebuffView(status, health) {
 
   // Docker container status card
   const containerStatus = status.container || {};
-  const containerCard = document.createElement("article");
-  containerCard.className = "provider-card";
   const containerRunning = containerStatus.running;
   const containerPillClass = containerRunning ? "ok"
     : containerStatus.status === "exited" ? "warn"
@@ -2075,44 +2198,55 @@ function renderFreebuffView(status, health) {
     : containerStatus.status === "exited" ? "Stopped"
     : containerStatus.status === "not_found" ? "Not Found"
     : "Unknown";
-  let containerMeta = "";
+  const containerMeta = [];
   if (containerStatus.container_id) {
-    containerMeta += `<div style="margin-top:4px;font-size:0.85em;opacity:0.8">Container ID: ${containerStatus.container_id.substring(0, 12)}</div>`;
+    containerMeta.push({
+      text: `Container ID: ${containerStatus.container_id.substring(0, 12)}`,
+      style: "margin-top:4px;font-size:0.85em;opacity:0.8",
+    });
   }
   if (containerStatus.error) {
-    containerMeta += `<div style="margin-top:2px;font-size:0.8em;color:#e74c3c">${containerStatus.error}</div>`;
+    containerMeta.push({
+      text: containerStatus.error,
+      style: "margin-top:2px;font-size:0.8em;color:#e74c3c",
+    });
   }
-  containerCard.innerHTML =
-    `<div class="provider-title"><strong>Docker Container</strong>` +
-    `<span class="status-pill ${containerPillClass}">${containerLabel}</span></div>${containerMeta}`;
+  const containerCard = buildStatusCard(
+    "Docker Container",
+    containerPillClass,
+    containerLabel,
+    containerMeta,
+  );
   healthGrid.appendChild(containerCard);
 
   // Health endpoint card
-  const healthCard = document.createElement("article");
-  healthCard.className = "provider-card";
   const healthStatus = health.status || status.health || "unknown";
   const healthPillClass = healthStatus === "healthy" ? "ok"
     : healthStatus === "not_configured" ? "neutral"
     : "error";
-  let healthMeta = "";
+  const healthMeta = [];
   if (health.uptime_sec != null) {
     const mins = Math.floor(health.uptime_sec / 60);
     const secs = Math.floor(health.uptime_sec % 60);
-    healthMeta += `<div style="margin-top:4px;font-size:0.85em;opacity:0.8">Uptime: ${mins}m ${secs}s</div>`;
+    healthMeta.push({
+      text: `Uptime: ${mins}m ${secs}s`,
+      style: "margin-top:4px;font-size:0.85em;opacity:0.8",
+    });
   }
   if (health.error) {
-    healthMeta += `<div style="margin-top:2px;font-size:0.8em;opacity:0.7">${health.error}</div>`;
+    healthMeta.push({ text: health.error, style: "margin-top:2px;font-size:0.8em;opacity:0.7" });
   }
-  healthCard.innerHTML =
-    `<div class="provider-title"><strong>Health Endpoint</strong>` +
-    `<span class="status-pill ${healthPillClass}">${healthStatus}</span></div>${healthMeta}`;
+  const healthCard = buildStatusCard(
+    "Health Endpoint",
+    healthPillClass,
+    healthStatus,
+    healthMeta,
+  );
   healthGrid.appendChild(healthCard);
 
   // Token state from health check
   if (health.token_state && health.token_state.length) {
     health.token_state.forEach((token) => {
-      const tCard = document.createElement("article");
-      tCard.className = "provider-card";
       const sessionStatus = token.session_status || token.status || token.state || "unknown";
       const tPillClass = sessionStatus === "active" || sessionStatus === "ok" || sessionStatus === "healthy" ? "ok"
         : sessionStatus === "rate_limited" || sessionStatus === "cooldown" || sessionStatus === "draining" ? "warn"
@@ -2121,15 +2255,26 @@ function renderFreebuffView(status, health) {
       const inflightCount = token.runs
         ? token.runs.reduce((sum, r) => sum + (r.inflight || 0), 0)
         : 0;
-      let tMeta = `<div style="margin-top:4px;font-size:0.85em;opacity:0.8">${runCount} active run(s), ${inflightCount} in-flight</div>`;
+      const tMeta = [
+        {
+          text: `${runCount} active run(s), ${inflightCount} in-flight`,
+          style: "margin-top:4px;font-size:0.85em;opacity:0.8",
+        },
+      ];
       if (token.session_expires_at && token.session_expires_at !== "0001-01-01T00:00:00Z") {
         const expires = new Date(token.session_expires_at);
         const minsLeft = Math.max(0, Math.round((expires - Date.now()) / 60000));
-        tMeta += `<div style="margin-top:2px;font-size:0.8em;opacity:0.7">Session expires in ~${minsLeft}m</div>`;
+        tMeta.push({
+          text: `Session expires in ~${minsLeft}m`,
+          style: "margin-top:2px;font-size:0.8em;opacity:0.7",
+        });
       }
-      tCard.innerHTML =
-        `<div class="provider-title"><strong>${token.name || "Token"}</strong>` +
-        `<span class="status-pill ${tPillClass}">${sessionStatus}</span></div>${tMeta}`;
+      const tCard = buildStatusCard(
+        token.name || "Token",
+        tPillClass,
+        sessionStatus,
+        tMeta,
+      );
       healthGrid.appendChild(tCard);
     });
   }
@@ -2142,8 +2287,13 @@ function renderFreebuffView(status, health) {
   modelsSection.className = "settings-section";
   const modelsHeading = document.createElement("div");
   modelsHeading.className = "section-heading";
-  modelsHeading.innerHTML =
-    `<div><h3>Models</h3><p>${status.model_count || 0} model(s) available through the Freebuff2API proxy.</p></div>`;
+  const modelsHeadingInner = document.createElement("div");
+  const modelsH3 = document.createElement("h3");
+  modelsH3.textContent = "Models";
+  const modelsP = document.createElement("p");
+  modelsP.textContent = `${status.model_count || 0} model(s) available through the Freebuff2API proxy.`;
+  modelsHeadingInner.append(modelsH3, modelsP);
+  modelsHeading.appendChild(modelsHeadingInner);
   modelsSection.appendChild(modelsHeading);
 
   const modelsRefreshRow = document.createElement("div");
@@ -2175,13 +2325,10 @@ function renderFreebuffView(status, health) {
     const modelGrid = document.createElement("div");
     modelGrid.className = "field-grid";
     models.forEach((model) => {
-      const mCard = document.createElement("article");
-      mCard.className = "provider-card";
       const mId = model.id || model.model || "unknown";
-      mCard.innerHTML =
-        `<div class="provider-title"><strong>${mId}</strong>` +
-        `<span class="status-pill ok">available</span></div>` +
-        `<div style="margin-top:2px;font-size:0.8em;opacity:0.7">Proxied via Freebuff2API</div>`;
+      const mCard = buildStatusCard(mId, "ok", "available", [
+        { text: "Proxied via Freebuff2API", style: "margin-top:2px;font-size:0.8em;opacity:0.7" },
+      ]);
       modelGrid.appendChild(mCard);
     });
     modelsSection.appendChild(modelGrid);
@@ -2319,7 +2466,7 @@ async function loadGraphSummary(pathB64, target) {
     const commit = summary.built_at_commit
       ? ` · commit ${String(summary.built_at_commit).slice(0, 7)}`
       : "";
-    target.innerHTML =
+    target.textContent =
       `📊 ${fmtNum(summary.node_count)} nodes · ${fmtNum(summary.link_count)} links · `
       + `${fmtNum(summary.hyperedge_count)} hyperedges${commit}`;
     target.dataset.loaded = "1";
@@ -2350,9 +2497,6 @@ function renderGraphifyView(status, projects, health) {
   const hp = graphifyHealthPill(health, status.running);
   const portInfo = status.port ? ` · port ${status.port}` : "";
   const pythonInfo = status.python ? ` · ${status.python}` : "";
-  const mcpPill = status.mcp_registered
-    ? ' <span class="status-pill ok">MCP registered</span>'
-    : ' <span class="status-pill neutral">MCP unregistered</span>';
   const projectCount = status.projects_count ?? projects.length;
   const countInfo = ` · ${projectCount} project${projectCount === 1 ? "" : "s"}`;
   let backendInfo = "";
@@ -2362,10 +2506,26 @@ function renderGraphifyView(status, projects, health) {
   } else if (status.code_only) {
     backendInfo = " · code-only";
   }
-  banner.innerHTML =
-    `<span class="status-pill ${runState}">${runLabel}</span> `
-    + `<span class="status-pill ${hp.cls}">${hp.label}</span>`
-    + `${mcpPill} Graphify · local MCP server (isolated venv, no Docker)${portInfo}${pythonInfo}${countInfo}${backendInfo}`;
+  banner.replaceChildren();
+  const runPillEl = document.createElement("span");
+  runPillEl.className = `status-pill ${runState}`;
+  runPillEl.textContent = runLabel;
+  const hpPillEl = document.createElement("span");
+  hpPillEl.className = `status-pill ${hp.cls}`;
+  hpPillEl.textContent = hp.label;
+  const mcpPillEl = document.createElement("span");
+  mcpPillEl.className = `status-pill ${status.mcp_registered ? "ok" : "neutral"}`;
+  mcpPillEl.textContent = status.mcp_registered ? "MCP registered" : "MCP unregistered";
+  banner.append(
+    runPillEl,
+    document.createTextNode(" "),
+    hpPillEl,
+    document.createTextNode(" "),
+    mcpPillEl,
+    document.createTextNode(
+      ` Graphify · local MCP server (isolated venv, no Docker)${portInfo}${pythonInfo}${countInfo}${backendInfo}`,
+    ),
+  );
   statusSection.appendChild(banner);
 
   const explainer = document.createElement("p");
@@ -2479,14 +2639,24 @@ function renderGraphifyView(status, projects, health) {
     const currentName = current
       ? (projects.find((p) => p.path === current.path)?.name || current.path)
       : "";
-    let bannerText = '<span class="status-pill warn">Indexing</span> ';
+    const idxPill = document.createElement("span");
+    idxPill.className = "status-pill warn";
+    idxPill.textContent = "Indexing";
+    queueBanner.appendChild(idxPill);
+    queueBanner.appendChild(document.createTextNode(" "));
     if (currentName) {
-      bannerText += `<strong>${currentName}</strong> is indexing`;
+      const nameStrong = document.createElement("strong");
+      nameStrong.textContent = currentName;
+      queueBanner.appendChild(nameStrong);
+      queueBanner.appendChild(document.createTextNode(" is indexing"));
     }
     if (queuedCount > 0) {
-      bannerText += ` · ${queuedCount} project${queuedCount === 1 ? "" : "s"} queued`;
+      queueBanner.appendChild(
+        document.createTextNode(
+          ` · ${queuedCount} project${queuedCount === 1 ? "" : "s"} queued`,
+        ),
+      );
     }
-    queueBanner.innerHTML = bannerText;
     projectSection.appendChild(queueBanner);
   }
 
@@ -2498,7 +2668,9 @@ function renderGraphifyView(status, projects, health) {
 
     const title = document.createElement("div");
     title.className = "provider-title";
-    title.innerHTML = `<strong>${project.name || project.path}</strong>`;
+    const projStrong = document.createElement("strong");
+    projStrong.textContent = project.name || project.path;
+    title.appendChild(projStrong);
     const pill = document.createElement("span");
     pill.className = `status-pill ${graphifyStatusPillClass(project.status)}`;
     pill.textContent = graphifyStatusLabel(project.status);
@@ -2627,11 +2799,15 @@ function renderGraphifyView(status, projects, health) {
     removeBtn.type = "button";
     removeBtn.className = "ghost-button";
     removeBtn.textContent = "Remove";
-    removeBtn.addEventListener("click", async () => {
-      const pathB64 = graphifyPathB64(project.path);
-      await api(`/admin/api/graphify/projects/${pathB64}`, { method: "DELETE" });
-      await loadGraphifyView();
-    });
+    wireTwoStepConfirm(
+      removeBtn,
+      async () => {
+        const pathB64 = graphifyPathB64(project.path);
+        await api(`/admin/api/graphify/projects/${pathB64}`, { method: "DELETE" });
+        await loadGraphifyView();
+      },
+      "Confirm Remove?",
+    );
 
     cardActions.append(indexBtn, removeBtn);
     card.append(title, meta, lastIndexed, graphLine, errorLine, cardActions);
@@ -2829,7 +3005,12 @@ async function loadOpenRouterView() {
     matches.forEach((p) => {
       const item = document.createElement("div");
       item.className = "openrouter-provider-item";
-      item.innerHTML = `<strong>${p.name}</strong> <span class="openrouter-provider-slug">${p.slug}</span>`;
+      const pName = document.createElement("strong");
+      pName.textContent = p.name;
+      const pSlug = document.createElement("span");
+      pSlug.className = "openrouter-provider-slug";
+      pSlug.textContent = p.slug;
+      item.append(pName, document.createTextNode(" "), pSlug);
       item.addEventListener("mousedown", (event) => {
         event.preventDefault();
       });
