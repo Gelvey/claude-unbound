@@ -89,7 +89,7 @@ The MCP meta-router (`scripts/mcp/`) exposes multiple MCP servers through a sing
 - Drop-in proxy for Claude Code's Anthropic API calls (`/v1/messages`, `/v1/models`).
 - Drop-in proxy for Codex via the OpenAI Responses API (`/v1/responses`).
 - `fcc-claude` and `fcc-codex` launchers that read the current Admin UI port and auth token each time they start.
-- 18 provider backends: NVIDIA NIM, OpenRouter, Google AI Studio (Gemini), DeepSeek, Mistral La Plateforme, Mistral Codestral, OpenCode Zen, OpenCode Go, Wafer, Kimi, Cerebras Inference, Cloudflare Workers AI, Groq, Fireworks AI, Z.ai, LM Studio, llama.cpp, and Ollama.
+- 19 provider backends: NVIDIA NIM, OpenRouter, Google AI Studio (Gemini), DeepSeek, Mistral La Plateforme, Mistral Codestral, OpenCode Zen, OpenCode Go, Wafer, Kimi, Cerebras Inference, Cloudflare Workers AI, Groq, Fireworks AI, Z.ai, LM Studio, llama.cpp, Ollama, and Freebuff.
 - Per-model routing for Claude Code: send Opus, Sonnet, Haiku, and fallback traffic to different providers.
 - Native Claude Code `/model` picker support through the proxy's `/v1/models` endpoint (see [Model Picker](#model-picker)).
 - Native Codex `/model` picker support when launched through `fcc-codex`, using a generated local model catalog.
@@ -99,7 +99,7 @@ The MCP meta-router (`scripts/mcp/`) exposes multiple MCP servers through a sing
 - Codex CLI and VS Code extension support through the shared `~/.codex/config.toml` provider config.
 - Optional voice-note transcription through local Whisper or NVIDIA NIM.
 - Optional **Graphify** knowledge-graph integration with per-session repo detection (`admin` → **Graphify**).
-- Local **Admin UI** at `/admin` to edit supported proxy settings, validate changes, and check providers (loopback access only).
+- Local **Admin UI** at `/admin` to edit supported proxy settings, validate changes, and check providers (loopback access only). In addition to the main Providers and Messaging views, the Admin UI includes dedicated panels for **MCP Router** (add, edit, and remove MCP backends), **Freebuff** (start, stop, and monitor the Freebuff2API process), **Graphify** (enable and configure the knowledge-graph integration), and **OpenRouter Policy** (set ZDR/data-collection enforcement rules).
 
 ## Quick Start
 
@@ -368,7 +368,21 @@ In the Admin UI, keep or update `LLAMACPP_BASE_URL`, then set `MODEL` to the loc
 
 For local coding models, context size matters. If llama.cpp returns HTTP 400 for normal Claude Code requests, increase `--ctx-size` and verify the model/server build supports the requested features.
 
-### 18. [Ollama](https://ollama.com/)
+### 18. Freebuff
+
+Freebuff is a managed local proxy to [codebuff.com](https://codebuff.com) that provides free access to models like DeepSeek V4 Pro. It is disabled by default; enable it from the Admin UI or set `FREEBUFF_ENABLED=true`.
+
+The Freebuff2API process runs as a Docker container or native binary managed by the proxy. Credentials are stored at `~/.config/manicode/credentials.json` (run `npm i -g freebuff && freebuff` to log in, or set `FREEBUFF_CREDENTIALS_PATH` to a custom file).
+
+In the Admin UI, set `MODEL` to a Freebuff slug such as `freebuff/deepseek/deepseek-v4-pro`.
+
+Popular examples:
+
+- `freebuff/deepseek/deepseek-v4-pro`
+
+Requires Docker (or the Freebuff2API binary) and valid Freebuff credentials. See `docs/TROUBLESHOOTING.md` for common Freebuff startup failures.
+
+### 19. [Ollama](https://ollama.com/)
 
 Run Ollama and pull a model:
 
@@ -381,7 +395,7 @@ In the Admin UI, keep or update `OLLAMA_BASE_URL`, then set `MODEL` to the same 
 
 `OLLAMA_BASE_URL` is the Ollama server root; do not append `/v1`. Example model slugs include `ollama/llama3.1` and `ollama/llama3.1:8b`.
 
-### 18. Mix Providers By Model Tier
+### 20. Mix Providers By Model Tier
 
 Each model tier can use a different provider by setting `MODEL_OPUS`, `MODEL_SONNET`, and `MODEL_HAIKU` in the Admin UI. Leave a tier blank to inherit `MODEL`. These tier overrides apply to Claude model names that contain `opus`, `sonnet`, or `haiku`. Codex uses the Admin `MODEL` default through `fcc-codex` unless a session requests a provider-prefixed slug directly.
 
