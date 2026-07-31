@@ -4,6 +4,8 @@ const state = {
   localStatus: new Map(),
   modelOptions: [],
   activeView: "providers",
+  statusPollTimer: null,
+  lastChecked: null,
 };
 
 const MASKED_SECRET = "********";
@@ -187,8 +189,15 @@ async function load() {
   renderProviders(config.provider_status);
   renderSections(config.sections, config.fields);
   byId("configPath").textContent = config.paths.managed;
+  // Attach copy button to config path (U4)
+  const configPathEl = byId("configPath");
+  if (configPathEl && !configPathEl.nextElementSibling?.classList?.contains("copy-btn")) {
+    const copyBtn = attachCopyButton(configPathEl, "Copy path");
+    configPathEl.parentNode.appendChild(copyBtn);
+  }
   await validate(false);
   await refreshLocalStatus();
+  startStatusPolling();
   updateDirtyState();
   showMessage("");
 }
@@ -259,6 +268,41 @@ function renderNav() {
     });
     nav.appendChild(button);
   });
+
+  // Theme toggle (U1)
+  const sidebar = document.querySelector(".sidebar");
+  if (sidebar && !sidebar.querySelector(".theme-toggle")) {
+    const themeBtn = document.createElement("button");
+    themeBtn.type = "button";
+    themeBtn.className = "theme-toggle";
+    themeBtn.textContent = "Toggle theme";
+    themeBtn.addEventListener("click", () => {
+      const current = document.documentElement.getAttribute("data-theme");
+      if (current === "light") {
+        document.documentElement.removeAttribute("data-theme");
+        themeBtn.textContent = "Toggle theme";
+      } else {
+        document.documentElement.setAttribute("data-theme", "light");
+        themeBtn.textContent = "Toggle theme";
+      }
+    });
+    sidebar.appendChild(themeBtn);
+  }
+
+  // Hamburger toggle for mobile (U8)
+  if (!document.querySelector(".sidebar-toggle")) {
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "sidebar-toggle";
+    toggle.setAttribute("aria-label", "Toggle sidebar");
+    toggle.textContent = "☰";
+    toggle.addEventListener("click", () => {
+      const sb = document.querySelector(".sidebar");
+      if (sb) sb.classList.toggle("open");
+    });
+    document.body.appendChild(toggle);
+  }
+
   setActiveView(state.activeView, { scroll: false });
 }
 
@@ -292,6 +336,13 @@ function setActiveView(viewId, { scroll = false } = {}) {
 function renderProviders(providerStatus) {
   const grid = byId("providerGrid");
   grid.innerHTML = "";
+  if (!providerStatus || providerStatus.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    empty.textContent = "No providers configured. Configure API keys below to see provider status.";
+    grid.appendChild(empty);
+    return;
+  }
   providerStatus.forEach((provider) => {
     const card = document.createElement("article");
     card.className = "provider-card";
@@ -424,6 +475,10 @@ function renderField(field) {
   }
 
   wrapper.append(label, input);
+  // Add reveal toggle for secret fields (U4)
+  if (field.type === "secret") {
+    wrapSecretInput(input);
+  }
   if (field.description) {
     const description = document.createElement("div");
     description.className = "field-description";
@@ -586,10 +641,37 @@ async function validate(showResult = true) {
 }
 
 function showValidationResult(result) {
+  // Clear previous per-field errors (U6)
+  document.querySelectorAll(".field-error").forEach((el) => el.remove());
+  document.querySelectorAll(".field-invalid").forEach((el) => el.classList.remove("field-invalid"));
+
   if (result.valid) {
     showMessage("Config shape is valid", "ok");
   } else {
     showMessage(result.errors.join("; "), "error");
+    // Add per-field error styling (U6)
+    const errors = Array.isArray(result.errors) ? result.errors : [];
+    for (const error of errors) {
+      // Try to match error to a field by key name in the message
+      const fields = state.fields;
+      if (!fields) continue;
+      for (const [key] of fields) {
+        if (error.includes(key)) {
+          const input = document.getElementById(`field-${key}`);
+          if (input) {
+            input.classList.add("field-invalid");
+            const wrapper = input.closest(".field");
+            if (wrapper && !wrapper.querySelector(".field-error")) {
+              const errEl = document.createElement("div");
+              errEl.className = "field-error";
+              errEl.textContent = error;
+              wrapper.appendChild(errEl);
+            }
+          }
+          break;
+        }
+      }
+    }
   }
 }
 
@@ -635,14 +717,51 @@ async function apply() {
 
 async function refreshLocalStatus() {
   const result = await api("/admin/api/providers/local-status");
+  state.lastChecked = new Date();
   result.providers.forEach((provider) => {
     state.localStatus.set(provider.provider_id, provider);
     const meta = provider.status_code
       ? `${provider.base_url} returned HTTP ${provider.status_code}`
       : provider.base_url;
     updateProviderCard(provider.provider_id, provider.status, provider.label, meta);
+    updateProviderCheckedTime(provider.provider_id);
   });
 }
+
+// Add "last checked" timestamp to a provider card (U5)
+function updateProviderCheckedTime(providerId) {
+  const card = document.querySelector(`[data-provider="${providerId}"]`);
+  if (!card || !state.lastChecked) return;
+  let checkedEl = card.querySelector(".provider-checked");
+  if (!checkedEl) {
+    checkedEl = document.createElement("div");
+    checkedEl.className = "provider-checked";
+    card.appendChild(checkedEl);
+  }
+  checkedEl.textContent = `Checked: ${state.lastChecked.toLocaleTimeString()}`;
+}
+
+// Start periodic polling of provider status (U5)
+function startStatusPolling() {
+  stopStatusPolling();
+  state.statusPollTimer = setInterval(async () => {
+    try {
+      await refreshLocalStatus();
+    } catch {
+      // Swallow transient polling errors
+    }
+  }, 60000);
+}
+
+function stopStatusPolling() {
+  if (state.statusPollTimer) {
+    clearInterval(state.statusPollTimer);
+    state.statusPollTimer = null;
+  }
+}
+
+// Clean up intervals on page unload (U5)
+window.addEventListener("beforeunload", stopStatusPolling);
 
 async function testProvider(providerId, button) {
   const original = button.textContent;
@@ -702,6 +821,52 @@ function showMessage(message, kind = "") {
   const area = byId("messageArea");
   area.textContent = message;
   area.className = `message-area ${kind}`.trim();
+}
+
+// Copy-to-clipboard helper (U4). Attaches a small copy button to a target element.
+function attachCopyButton(targetEl, buttonLabel = "Copy") {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "copy-btn";
+  btn.textContent = buttonLabel;
+  btn.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(targetEl.textContent || targetEl.value || "");
+      btn.classList.add("copied");
+      btn.textContent = "Copied";
+      setTimeout(() => {
+        btn.classList.remove("copied");
+        btn.textContent = buttonLabel;
+      }, 1500);
+    } catch {
+      showMessage("Clipboard not available", "error");
+    }
+  });
+  return btn;
+}
+
+// Wrap a secret input with a reveal toggle (U4).
+function wrapSecretInput(input) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "secret-wrapper";
+  input.parentNode.insertBefore(wrapper, input);
+  wrapper.appendChild(input);
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "reveal-toggle";
+  toggle.textContent = "👁";
+  toggle.title = "Show/hide";
+  toggle.addEventListener("click", () => {
+    if (input.type === "password") {
+      input.type = "text";
+      toggle.textContent = "🔒";
+    } else {
+      input.type = "password";
+      toggle.textContent = "👁";
+    }
+  });
+  wrapper.appendChild(toggle);
+  return wrapper;
 }
 
 byId("validateButton").addEventListener("click", () => validate(true));
@@ -818,6 +983,13 @@ function renderMcpView(config, status) {
     const grid = document.createElement("div");
     grid.className = "field-grid";
     const serverNames = Object.keys(serversObj);
+
+    if (serverNames.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "empty-state";
+      empty.textContent = `No ${isShared ? "shared " : ""}backends configured. Click "+ Add Backend" to create one.`;
+      grid.appendChild(empty);
+    }
 
     serverNames.forEach((name) => {
       const srv = serversObj[name];
@@ -1024,22 +1196,27 @@ function renderSftpSection(config, container) {
     wrapper.dataset.sftpField = key;
     const lbl = document.createElement("label");
     lbl.textContent = label;
+    const inputId = `sftp-field-${key}`;
+    lbl.htmlFor = inputId;
     const input = document.createElement(type === "checkbox" ? "input" : (type === "select" ? "select" : (type === "textarea" ? "textarea" : "input")));
     let actualValue = value;
     if (type === "checkbox") {
       input.type = "checkbox";
       input.checked = !!value;
+      input.id = inputId;
       actualValue = value ? "true" : "false";
     } else if (type === "select") {
       // handled below
     } else if (type === "textarea") {
       input.value = value || "";
       input.placeholder = placeholder || "";
+      input.id = inputId;
       actualValue = value || "";
     } else {
       input.type = type;
       input.value = value || "";
       input.placeholder = placeholder || "";
+      input.id = inputId;
       actualValue = value || "";
     }
     // Wire into global Apply button via data-key
@@ -1065,7 +1242,9 @@ function renderSftpSection(config, container) {
   authWrapper.dataset.sftpField = "auth_method";
   const authLabel = document.createElement("label");
   authLabel.textContent = "Auth Method";
+  authLabel.htmlFor = "sftp-field-auth_method";
   const authSelect = document.createElement("select");
+  authSelect.id = "sftp-field-auth_method";
   ["password", "key"].forEach((m) => {
     const opt = document.createElement("option");
     opt.value = m;
@@ -1117,8 +1296,10 @@ function renderSftpSection(config, container) {
   enabledWrapper.dataset.sftpField = "enabled";
   const enabledLabel = document.createElement("label");
   enabledLabel.textContent = "Enabled";
+  enabledLabel.htmlFor = "sftp-enabled";
   const enabledCheckbox = document.createElement("input");
   enabledCheckbox.type = "checkbox";
+  enabledCheckbox.id = "sftp-enabled";
   enabledCheckbox.checked = !!sftp.enabled;
   enabledCheckbox.dataset.key = SFTP_FIELD_MAP.enabled;
   enabledCheckbox.dataset.original = sftp.enabled ? "true" : "false";
