@@ -30,6 +30,8 @@ Gates:
 3. `CI / ruff-check` — `uv run ruff check`.
 4. `CI / ty` — `uv run ty check`.
 5. `CI / pytest` — `uv run pytest -v --tb=short`.
+6. `CI / admin-build` — `npm ci && npm run build` then `git diff --exit-code api/admin_static/` (arteffacts must be fresh).
+7. `CI / admin-test` — `npm ci && npm test` (Vitest component + helper suite).
 
 Useful flags:
 
@@ -37,12 +39,16 @@ Useful flags:
 - `--skip pytest` — skip the long-running test step.
 - `--dry-run` — list the gates without executing them.
 
+### Admin UI changes
+
+Any change under `frontend/` (or anything affecting the admin UI) requires running `npm run build` and committing the regenerated `api/admin_static/` artefacts (`admin.js`, `admin.css`, `index.html`) in the same change. Do not hand-edit those three files — they are build outputs; the `admin-build` CI job rejects stale artefacts. The Vitest suite (`npm test`) covers the `<Field>` component, the `<TwoStepConfirm>` component, the API client, and the store/apply pure helpers.
+
 ## Branch protection on `main`
 
 `main` is protected:
 
-- **5 required status checks** (the full context names GitHub uses): `CI / Ban type ignore suppressions`, `CI / ruff-format`, `CI / ruff-check`, `CI / ty`, `CI / pytest`. `strict: false` so a check that has not yet reported cannot block a fresh push.
-- **`enforce_admins: true`** — every push to `main` must have all 5 checks green on the same SHA, even for the repo owner.
+- **Required status checks** (the full context names GitHub uses): `CI / Ban type ignore suppressions`, `CI / ruff-format`, `CI / ruff-check`, `CI / ty`, `CI / pytest`, `CI / admin-build`, `CI / admin-test`. `strict: false` so a check that has not yet reported cannot block a fresh push.
+- **`enforce_admins: true`** — every push to `main` must have all required checks green on the same SHA, even for the repo owner.
 - **`allow_force_pushes: false`**, **`allow_deletions: false`** — history is protected.
 
 ### Routine workflow

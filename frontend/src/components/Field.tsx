@@ -52,7 +52,11 @@ export function Field({ field }: { field: ConfigField }) {
         className="flex items-center justify-between gap-2 text-xs font-bold uppercase tracking-wide text-base-content/60"
       >
         <span>{field.label}</span>
-        {source && <span className="text-[11px] font-semibold text-base-content/50">{source}</span>}
+        {source && (
+          <span aria-hidden="true" className="text-[11px] font-semibold text-base-content/50">
+            {source}
+          </span>
+        )}
       </label>
 
       <FieldInput

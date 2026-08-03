@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-CHECK_ORDER="suppressions ruff-format ruff-check ty pytest admin-build"
+CHECK_ORDER="suppressions ruff-format ruff-check ty pytest admin-build admin-test"
 
 dry_run=0
 only_checks=""
@@ -21,6 +21,7 @@ Checks (in order):
   ty             uv run ty check
   pytest         uv run pytest -v --tb=short
   admin-build    npm ci && npm run build && git diff --exit-code api/admin_static/
+  admin-test     npm ci && npm test
 
 Options:
   --only ID                Run only the given check (repeatable)
@@ -69,7 +70,7 @@ run() {
 
 valid_check_id() {
     case "$1" in
-        suppressions | ruff-format | ruff-check | ty | pytest | admin-build) return 0 ;;
+        suppressions | ruff-format | ruff-check | ty | pytest | admin-build | admin-test) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -115,7 +116,7 @@ selected_checks_need_uv() {
     fi
 
     for check_id in $CHECK_ORDER; do
-        if should_run_check "$check_id" && [ "$check_id" != "suppressions" ] && [ "$check_id" != "admin-build" ]; then
+        if should_run_check "$check_id" ] && [ "$check_id" != "suppressions" ] && [ "$check_id" != "admin-build" ] && [ "$check_id" != "admin-test" ]; then
             return 0
         fi
     done
@@ -178,6 +179,23 @@ run_admin_build() {
     fi
 }
 
+run_admin_test() {
+    step "admin-test (npm test)"
+    if ! command -v npm >/dev/null 2>&1; then
+        printf 'warning: npm not found on PATH — skipping admin-test locally.\n' >&2
+        printf '         The admin-test CI job is the hard gate; this local check is optional.\n' >&2
+        return 0
+    fi
+    print_command npm ci
+    if [ "$dry_run" -eq 0 ]; then
+        npm ci
+    fi
+    print_command npm test
+    if [ "$dry_run" -eq 0 ]; then
+        npm test
+    fi
+}
+
 run_check() {
     case "$1" in
         suppressions) run_suppressions ;;
@@ -186,6 +204,7 @@ run_check() {
         ty) run_ty ;;
         pytest) run_pytest ;;
         admin-build) run_admin_build ;;
+        admin-test) run_admin_test ;;
         *) fail "unknown check id: $1" ;;
     esac
 }

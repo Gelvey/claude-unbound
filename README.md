@@ -741,6 +741,25 @@ CI also enforces a ban on `# type: ignore` / `# ty: ignore` suppressions; `scrip
   lifecycle hooks without editing this repo. See
   [docs/MODULES.md](docs/MODULES.md).
 
+### 6. Admin UI Development
+
+The `/admin` UI is a React + TypeScript + Tailwind v4 + daisyUI 5 SPA built with Vite from `frontend/` into the served `api/admin_static/` directory. Built artefacts (`admin.js`, `admin.css`, `index.html`) are committed so end users never need Node; CI verifies freshness.
+
+```bash
+npm ci            # install dev toolchain (node 22)
+npm run dev       # Vite dev server at http://localhost:5173/admin/assets/, proxies /admin/api to :8082
+npm run build     # tsc -b + vite build into api/admin_static/ (commit the result)
+npm test          # Vitest component + helper suite
+```
+
+While the dev server runs, start the Python API on `8082` in another terminal so `/admin/api/*` is proxied:
+
+```bash
+uv run uvicorn server:app --host 127.0.0.1 --port 8082
+```
+
+If you change anything under `frontend/`, run `npm run build` and commit the regenerated `api/admin_static/` artefacts in the same change — the `admin-build` CI job fails the PR if committed artefacts are stale. Do not hand-edit `api/admin_static/admin.js`, `admin.css`, or `index.html`; they are build outputs. The `admin-test` CI job runs the Vitest suite.
+
 ## Contributing
 
 This is a personal fork; **PRs are not accepted here**. Send bug fixes and broadly-useful patches to [Gelvey/claude-unbound](https://github.com/Gelvey/claude-unbound) instead. If you want to work on this fork locally — including pulling upstream changes or running the CI gates — read [CONTRIBUTING.md](CONTRIBUTING.md), which covers:

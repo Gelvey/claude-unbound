@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { AnimatePresence, motion } from "motion/react";
 import { AdminStoreProvider, useAdminStore } from "./store/useAdminStore";
 import { ThemeProvider, useTheme } from "./theme/ThemeProvider";
 import { ModelOptionsDatalist, CopyButton } from "./components/Field";
@@ -108,7 +109,18 @@ function ActionBar() {
           <CopyButton target={configPath} />
         </span>
       </div>
-      <div className={`min-w-0 text-sm ${messageClass}`}>{message.text}</div>
+      <motion.div
+        key={`${message.kind}:${message.text}`}
+        className={`min-w-0 text-sm ${messageClass}`}
+        animate={
+          message.kind === "error"
+            ? { x: [0, -6, 6, -4, 4, 0] }
+            : { x: 0 }
+        }
+        transition={{ duration: 0.32, ease: "easeInOut" }}
+      >
+        {message.text}
+      </motion.div>
       <div className="flex gap-2">
         <button
           type="button"
@@ -164,7 +176,17 @@ function Shell() {
       <main className="min-w-0 p-8 md:pt-20 md:px-9">
         <Topbar />
         <div className="grid gap-5">
-          {activeTabData ? <ModuleTabView tab={activeTabData} /> : <AdminViews />}
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={activeView}
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -6 }}
+              transition={{ duration: 0.18, ease: "easeOut" }}
+            >
+              {activeTabData ? <ModuleTabView tab={activeTabData} /> : <AdminViews />}
+            </motion.div>
+          </AnimatePresence>
         </div>
       </main>
       <ActionBar />
