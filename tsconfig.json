@@ -15,5 +15,11 @@
     "noEmit": true,
     "types": ["vite/client"]
   },
-  "include": ["frontend/src"]
+  "include": ["frontend/src"],
+  "exclude": [
+    "frontend/src/**/*.test.tsx",
+    "frontend/src/**/*.test.ts",
+    "frontend/src/**/__tests__/**",
+    "frontend/src/test-setup.ts"
+  ]
 }

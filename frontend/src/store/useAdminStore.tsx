@@ -289,28 +289,14 @@ export function AdminStoreProvider({ children }: { children: ReactNode }) {
   );
 
   const apply = useCallback(async (): Promise<void> => {
-    const values = allCurrentValues();
-    // Don't send the masked sentinel for unchanged secrets; the server preserves
-    // existing values. Mirrors admin.js apply().
-    for (const key of Object.keys(values)) {
-      if (values[key] === MASKED_SECRET) delete values[key];
-    }
+    const payload = stripMaskedSecret(allCurrentValues());
     try {
-      const result: ApplyResult = await configApi.applyConfig(values);
-      if (!result.applied) {
-        if (result.errors) showMessage(result.errors.join("; "), "error");
-        return;
-      }
-      const restart = result.restart ?? {
-        required: false,
-        automatic: false,
-        admin_url: null as string | null,
-        fields: [] as string[],
-      };
-      if (restart.required && restart.automatic) {
-        showMessage("Applied. Restarting server...", "ok");
+      const result: ApplyResult = await configApi.applyConfig(payload);
+      const msg = describeApplyResult(result);
+      if (msg.redirect) {
+        showMessage(msg.text, msg.kind);
         setTimeout(() => {
-          window.location.href = restart.admin_url || "/admin";
+          window.location.href = msg.redirect!;
         }, 1600);
         return;
       }
@@ -321,13 +307,7 @@ export function AdminStoreProvider({ children }: { children: ReactNode }) {
       for (const cb of activationCallbacksRef.current) {
         cb(activeView);
       }
-      const pending = restart.required ? restart.fields || [] : result.pending_fields || [];
-      showMessage(
-        pending.length
-          ? `Applied. Restart fcc-server to use: ${pending.join(", ")}`
-          : "Applied",
-        "ok",
-      );
+      showMessage(msg.text, msg.kind);
     } catch (err) {
       showMessage(err instanceof Error ? err.message : "Apply failed", "error");
     }
@@ -414,6 +394,67 @@ export function useAdminStore(): AdminStoreValue {
   const ctx = useContext(AdminStoreContext);
   if (!ctx) throw new Error("useAdminStore must be used inside AdminStoreProvider");
   return ctx;
+}
+
+// Build the apply payload from current field values: skip locked fields,
+// surface configured-but-unretyped secrets as MASKED_SECRET (mirrors admin.js).
+export function collectCurrentValues(
+  fields: ConfigField[],
+  fieldValues: Map<string, string>,
+): Record<string, string> {
+  const values: Record<string, string> = {};
+  for (const field of fields) {
+    if (field.locked) continue;
+    const current = fieldValues.get(field.key) ?? computeInitialValue(field);
+    values[field.key] = readFieldValue(field, current);
+  }
+  return values;
+}
+
+// Strip the masked sentinel for unchanged configured secrets; the server
+// preserves the stored value when the key is absent from the payload.
+export function stripMaskedSecret(
+  values: Record<string, string>,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(values)) {
+    if (value !== MASKED_SECRET) out[key] = value;
+  }
+  return out;
+}
+
+export interface ApplyMessage {
+  text: string;
+  kind: "" | "ok" | "error";
+  redirect?: string | null;
+}
+
+// Purely derive the post-apply banner message (+ redirect) from the backend
+// result. Mirrors the old admin.js apply() branching.
+export function describeApplyResult(result: ApplyResult): ApplyMessage {
+  if (!result.applied) {
+    return { text: (result.errors || []).join("; "), kind: "error" };
+  }
+  const restart = result.restart ?? {
+    required: false,
+    automatic: false,
+    admin_url: null as string | null,
+    fields: [] as string[],
+  };
+  if (restart.required && restart.automatic) {
+    return {
+      text: "Applied. Restarting server...",
+      kind: "ok",
+      redirect: restart.admin_url || "/admin",
+    };
+  }
+  const pending = restart.required ? restart.fields || [] : result.pending_fields || [];
+  return {
+    text: pending.length
+      ? `Applied. Restart fcc-server to use: ${pending.join(", ")}`
+      : "Applied",
+    kind: "ok",
+  };
 }
 
 export { readFieldValue, computeInitialValue, computeOriginal };

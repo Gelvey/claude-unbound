@@ -6,6 +6,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { motion } from "motion/react";
 
 type Theme = "light" | "dark";
 const STORAGE_KEY = "fcc-admin-theme";
@@ -25,6 +26,7 @@ function initialTheme(): Theme {
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [theme, setTheme] = useState<Theme>(initialTheme);
+  const [flash, setFlash] = useState(0);
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
@@ -33,11 +35,21 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   const toggleTheme = useCallback(() => {
     setTheme((t) => (t === "light" ? "dark" : "light"));
+    setFlash((f) => f + 1);
   }, []);
 
   return (
     <ThemeContext.Provider value={{ theme, toggleTheme }}>
       {children}
+      {flash > 0 && (
+        <motion.div
+          key={flash}
+          className="fixed inset-0 z-[2000] pointer-events-none bg-base-100"
+          initial={{ opacity: 0.35 }}
+          animate={{ opacity: 0 }}
+          transition={{ duration: 0.2, ease: "easeOut" }}
+        />
+      )}
     </ThemeContext.Provider>
   );
 }

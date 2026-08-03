@@ -2,7 +2,9 @@
 // old admin.css semantics (.primary-button -> btn-primary, .provider-card ->
 // card, status pills -> badge, etc.) so views stay declarative.
 
+import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
+import { motion } from "motion/react";
 
 type ButtonVariant = "primary" | "secondary" | "ghost";
 
@@ -220,17 +222,51 @@ export function Modal({
   children: ReactNode;
   onDismiss: () => void;
 }) {
+  const [closing, setClosing] = useState(false);
+  const handleClose = () => {
+    if (closing) return;
+    setClosing(true);
+    window.setTimeout(onDismiss, 170);
+  };
+  // Esc-to-close + focus the box on mount.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") handleClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
   return (
     <div
-      className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/60"
+      className="fixed inset-0 z-[1000] flex items-center justify-center"
       onClick={(e) => {
-        if (e.target === e.currentTarget) onDismiss();
+        if (e.target === e.currentTarget) handleClose();
       }}
     >
-      <div className="modal-box max-w-md">
+      <motion.div
+        className="absolute inset-0 bg-black/60"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: closing ? 0 : 1 }}
+        transition={{ duration: 0.17, ease: "easeOut" }}
+      />
+      <motion.div
+        className="modal-box max-w-md relative"
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        tabIndex={-1}
+        initial={{ opacity: 0, scale: 0.96, y: 8 }}
+        animate={{
+          opacity: closing ? 0 : 1,
+          scale: closing ? 0.96 : 1,
+          y: closing ? 8 : 0,
+        }}
+        transition={{ duration: 0.17, ease: "easeOut" }}
+        autoFocus
+      >
         <h3 className="text-lg font-bold text-warning">{title}</h3>
         <div className="mt-3">{children}</div>
-      </div>
+      </motion.div>
     </div>
   );
 }

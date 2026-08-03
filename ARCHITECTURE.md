@@ -602,7 +602,9 @@ enforces:
 - `ruff-format`;
 - `ruff-check`;
 - `ty`;
-- `pytest`.
+- `pytest`;
+- `admin-build` (Vite build + committed-arteffact freshness gate on `api/admin_static/`);
+- `admin-test` (Vitest component and helper suite).
 
 Contributor verification commands:
 
@@ -611,11 +613,47 @@ uv run ruff format
 uv run ruff check
 uv run ty check
 uv run pytest
+npm run build   # rebuild admin artefacts after any frontend change
+npm test        # Vitest suite
 ```
 
 For docs-only architecture changes, a source-link and accuracy review is usually
 sufficient. Full CI can still be run when the doc accompanies runtime changes or
 when maintainers want branch-level assurance.
+
+### Admin UI Frontend
+
+The `/admin` surface is a React 19 + TypeScript SPA built with Vite from
+`frontend/` into the served `api/admin_static/` directory. The FastAPI route in
+[api/admin_routes.py](api/admin_routes.py) serves the three flat artefacts
+(`admin.js`, `admin.css`, `index.html`) from `/admin/assets/` and is unchanged by
+the frontend build — Vite is configured with `base: '/admin/assets/'`,
+`assetsDir: '.'`, fixed output names, and `inlineDynamicImports` so the build
+matches the existing whitelist.
+
+Layout:
+
+- `frontend/src/main.tsx` — React root; mounts `<App/>`; loads Tailwind v4 entry
+  CSS with the daisyUI 5 plugin.
+- `frontend/src/App.tsx` — shell: sidebar nav, topbar, `<AdminViews>` outlet
+  (motion-animated view switch), footer action bar (Validate/Apply), theme
+  toggle, module-tabs injection point.
+- `frontend/src/store/useAdminStore.tsx` — global store (React context): config
+  load, dirty-state tracking, validate/apply, status polling, view-activation
+  callbacks. Pure helpers (`readFieldValue`, `collectCurrentValues`,
+  `stripMaskedSecret`, `describeApplyResult`) encode the apply payload and
+  MASKED_SECRET semantics shared with the backend contract.
+- `frontend/src/components/` — `<Field>` (one component per config field type),
+  `<FormSections>`, `<TwoStepConfirm>`, `<ViewErrorBoundary>`, daisyUI primitives
+  in `ui.tsx`.
+- `frontend/src/views/` — one view per nav entry (Providers, ModelConfig,
+  Messaging, Cloudflare, Diagnostics, MCP, Freebuff, Graphify, OpenRouter).
+- `frontend/src/api/` — one typed client module per feature area wrapping
+  `fetch('/admin/api/...')`.
+
+Built artefacts are committed so installed users never need Node; the
+`admin-build` CI job fails the PR if `api/admin_static/` is stale. Do not
+hand-edit the build outputs.
 
 ## Extension Checklists
 

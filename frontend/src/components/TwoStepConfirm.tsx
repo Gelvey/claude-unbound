@@ -57,6 +57,7 @@ export function TwoStepConfirm({
   const cls = working
     ? `${base} ${variantClass(variant)} btn-disabled`
     : `${base} ${variantClass(variant)}${armed ? " btn-warning" : ""}`;
+  const displayLabel = working ? "Working..." : armed ? confirmLabel : label;
 
   return (
     <button
@@ -65,8 +66,12 @@ export function TwoStepConfirm({
       disabled={disabled || working}
       onClick={handleClick}
       title={title}
+      aria-label={
+        armed ? `${label} — press again to confirm` : displayLabel
+      }
+      aria-live="polite"
     >
-      {working ? "Working..." : armed ? confirmLabel : label}
+      {displayLabel}
     </button>
   );
 }
