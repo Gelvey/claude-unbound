@@ -24,6 +24,12 @@ scripts/mcp/*.pyc
 
 # Managed FCC config directory (never part of the repo)
 .fcc/
+
+# Admin UI — built artefacts are committed to api/admin_static/; the source
+# tree and node_modules stay out. End users never need Node.
+node_modules/
+frontend/dist/
+*.tsbuildinfo
 # Graphify extraction output — generated per-index run, not source.
 graphify-out/
 

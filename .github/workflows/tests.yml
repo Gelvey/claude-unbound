@@ -110,3 +110,28 @@ jobs:
         env:
           FCC_LIVE_SMOKE: "1"
         run: uv run pytest smoke/ -m live -v --tb=short
+
+  admin-build:
+    name: admin-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.ref }}
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          fetch-depth: 1
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Build admin UI
+        run: npm ci && npm run build
+
+      - name: Verify committed artefacts are fresh
+        run: git diff --exit-code api/admin_static/
