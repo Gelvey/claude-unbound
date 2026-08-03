@@ -138,7 +138,7 @@ ORIGIN_URL=$(git remote get-url origin)
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "HEAD")
 
 echo "  Remote : $ORIGIN_URL"
-echo "  Branch : $CURRENT_BRANCH"
+echo "  Branch : $CURRENT_BRANCH (sync target: main)"
 echo ""
 
 if ! git fetch origin --quiet 2>/dev/null; then
@@ -148,33 +148,30 @@ if ! git fetch origin --quiet 2>/dev/null; then
 fi
 
 LOCAL_HEAD=$(git rev-parse HEAD 2>/dev/null)
-REMOTE_HEAD=$(git rev-parse "origin/$CURRENT_BRANCH" 2>/dev/null || git rev-parse origin/main 2>/dev/null)
+REMOTE_HEAD=$(git rev-parse origin/main 2>/dev/null)
 
 if [ -n "$LOCAL_HEAD" ] && [ -n "$REMOTE_HEAD" ] && [ "$LOCAL_HEAD" != "$REMOTE_HEAD" ]; then
     NEW_COUNT=$(git rev-list --count "$LOCAL_HEAD..$REMOTE_HEAD" 2>/dev/null || echo "?")
-    echo "  ⚠ $NEW_COUNT new commit(s) available on remote"
+    echo "  ⚠ $NEW_COUNT new commit(s) available on origin/main"
     echo ""
 
-    # Show the last 10 commits on origin
-    git log "origin/$CURRENT_BRANCH" --oneline --decorate=short \
-        -10 --format="    %C(yellow)%h%C(reset) %C(dim)%ar%C(reset) %s" 2>/dev/null \
-        || git log origin/main --oneline --decorate=short \
-            -10 --format="    %C(yellow)%h%C(reset) %C(dim)%ar%C(reset) %s" 2>/dev/null
+    # Show the last 10 commits on origin/main
+    git log origin/main --oneline --decorate=short \
+        -10 --format="    %C(yellow)%h%C(reset) %C(dim)%ar%C(reset) %s" 2>/dev/null
     echo ""
 
     echo "  ─────────────────────────────────────────────────────────"
     echo "  ⚠  WARNING: Force-pull will DISCARD all local changes"
-    echo "     and reset to the remote state."
+    echo "     and reset to origin/main (checking out main first)."
     echo ""
     printf "  Pull latest state of claude-unbound? [y/N] "
     read -r REPLY
     echo ""
 
     if [ "$REPLY" = "y" ] || [ "$REPLY" = "Y" ]; then
-        echo "[fcc] Force-pulling latest state from origin..."
-        if git reset --hard "origin/$CURRENT_BRANCH" 2>/dev/null \
-                || git reset --hard origin/main 2>/dev/null; then
-            echo "[fcc] ✓ Local checkout reset to $(git rev-parse --short HEAD)"
+        echo "[fcc] Force-pulling latest state from origin/main..."
+        if git checkout main 2>/dev/null && git reset --hard origin/main; then
+            echo "[fcc] ✓ Local checkout reset to $(git rev-parse --short HEAD) on main"
         else
             echo "[fcc] ERROR: Force-pull failed"
         fi
@@ -182,7 +179,7 @@ if [ -n "$LOCAL_HEAD" ] && [ -n "$REMOTE_HEAD" ] && [ "$LOCAL_HEAD" != "$REMOTE_
         echo "[fcc] Skipping pull — continuing with local checkout"
     fi
 else
-    echo "  ✓ Local checkout is already up to date"
+    echo "  ✓ Local checkout is already up to date with origin/main"
 fi
 
 # ── Launch mode selection ───────────────────────────────────────────────────
