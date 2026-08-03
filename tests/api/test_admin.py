@@ -137,9 +137,10 @@ def test_admin_static_defines_graphify_view():
     assert 'id: "graphify"' in store
     assert 'sections: ["graphify"]' in store
     assert 'id:"graphify"' in script
-    # The graphify view renders the GraphifyPlaceholder component (the old
-    # loadGraphifyView/renderGraphifyView vanilla-JS entry points are gone).
-    assert "GraphifyPlaceholder" in admin_views
+    # The graphify view is implemented by GraphifyView (Phase 2 replaced the
+    # Phase 1 GraphifyPlaceholder with the bespoke widget port).
+    assert "GraphifyView" in admin_views
+    assert "GraphifyPlaceholder" not in admin_views
 
 
 def test_admin_static_index_html_is_spa_shell_with_all_views():
