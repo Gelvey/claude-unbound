@@ -320,7 +320,7 @@ export function AdminStoreProvider({ children }: { children: ReactNode }) {
     async (providerId: string): Promise<void> => {
       try {
         const result = await providersApi.testProvider(providerId);
-        if (result.ok && result.models) {
+        if (result.ok && result.models && result.models.length) {
           setModelOptions((prev) =>
             Array.from(
               new Set([
@@ -329,6 +329,13 @@ export function AdminStoreProvider({ children }: { children: ReactNode }) {
               ]),
             ).sort(),
           );
+          showMessage(`Found ${result.models.length} model(s) for ${providerId}`, "ok");
+        } else if (result.ok) {
+          showMessage(`No models returned for ${providerId}`, "error");
+        } else {
+          const code = result.status_code ? ` (HTTP ${result.status_code})` : "";
+          const detail = result.error_message ? `: ${result.error_message}` : "";
+          showMessage(`${providerId} test failed${code}${detail}`, "error");
         }
       } catch (err) {
         showMessage(

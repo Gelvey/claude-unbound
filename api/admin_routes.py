@@ -261,10 +261,11 @@ async def test_provider(provider_id: str, request: Request):
     # and the cached instance may have a stale base_url after restart.
     # evict() calls cleanup() on the old provider to release connections.
     await registry.evict(provider_id)
+    # Initialise before the try so the except handlers can safely reference
+    # request_url even if registry.get() raises before it is assigned.
+    request_url = None
     try:
         provider = registry.get(provider_id, settings)
-        # Capture the models endpoint URL before the request for error diagnostics
-        request_url = None
         models_endpoint = getattr(provider, "_models_endpoint", None)
         if callable(models_endpoint):
             request_url = models_endpoint()

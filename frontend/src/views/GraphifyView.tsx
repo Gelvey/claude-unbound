@@ -103,6 +103,7 @@ export function GraphifyView() {
   }, [projects, activeView, stopAutoRefresh]);
 
   useEffect(() => {
+    void loadGraphifyView();
     return registerViewActivation((viewId) => {
       if (viewId === "graphify") {
         void loadGraphifyView();

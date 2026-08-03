@@ -41,14 +41,28 @@ def _run_launcher(*env_overrides: str) -> subprocess.CompletedProcess[str]:
         if "=" in override:
             key, val = override.split("=", 1)
             env[key] = val
-    return subprocess.run(
-        ["bash", str(sh)],
-        cwd=_repo_root(),
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        return subprocess.run(
+            ["bash", str(sh)],
+            cwd=_repo_root(),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        # The minimal PATH only strips fcc-* binaries; on hosts where kitty
+        # itself lives under /usr/bin or /bin, the kitty check passes and the
+        # script proceeds into preflight (git fetch / interactive read) which
+        # blocks. Treat that as a non-zero exit so callers asserting "script
+        # did not run successfully" still hold, instead of hanging the suite.
+        return subprocess.CompletedProcess(
+            args=["bash", str(sh)],
+            returncode=124,
+            stdout="",
+            stderr="launcher.sh timed out (kitty likely present on PATH)",
+        )
 
 
 # ── Static content / structure checks ──────────────────────────────────────

@@ -42,6 +42,7 @@ export function FreebuffView() {
   }, []);
 
   useEffect(() => {
+    void loadFreebuffView();
     return registerViewActivation((viewId) => {
       if (viewId === "freebuff") void loadFreebuffView();
     });

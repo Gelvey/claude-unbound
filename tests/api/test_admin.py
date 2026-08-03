@@ -773,6 +773,37 @@ def test_admin_test_provider_returns_generic_error_for_non_http_exception(
     assert "status_code" not in body
 
 
+def test_admin_test_provider_survives_get_failure_before_request_url(
+    monkeypatch, tmp_path
+):
+    """registry.get() raising before request_url is assigned must not 500.
+
+    Previously request_url was initialised inside the try block, so an
+    exception from registry.get() left it unbound and the except handler's
+    ``if request_url:`` raised UnboundLocalError -> 500. The endpoint must
+    return 200 with ok=False instead.
+    """
+    _set_home(monkeypatch, tmp_path)
+    _clear_process_config(monkeypatch)
+    monkeypatch.setenv("CLOUDFLARE_AI_API_KEY", "test-key")
+    monkeypatch.setenv("CLOUDFLARE_AI_ACCOUNT_ID", "test-account")
+    app = create_app(lifespan_enabled=False)
+
+    with patch("providers.registry.ProviderRegistry.get") as mock_get:
+        mock_get.side_effect = RuntimeError("provider not configured")
+        response = _local_client(app).post(
+            "/admin/api/providers/cloudflare_ai/test",
+            json={},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error_type"] == "RuntimeError"
+    assert body["error_message"] == "provider not configured"
+    assert "request_url" not in body
+
+
 class TestWriteClaudePermissionsSetting:
     """POST /admin/settings/claude_dangerously_skip_permissions writes ~/.claude/settings.json."""
 

@@ -41,6 +41,7 @@ export function OpenRouterView() {
   }, []);
 
   useEffect(() => {
+    void loadOpenRouterView();
     return registerViewActivation((viewId) => {
       if (viewId === "openrouter_policy") void loadOpenRouterView();
     });

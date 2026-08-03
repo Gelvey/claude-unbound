@@ -144,6 +144,7 @@ export function McpView() {
   }, []);
 
   useEffect(() => {
+    void loadMcpView();
     return registerViewActivation((viewId) => {
       if (viewId === "mcp") void loadMcpView();
     });
