@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   applyMcpConfig,
   composioSetup,
@@ -448,7 +449,11 @@ function McpEditModal({
     onSave(draft, state.originalName, state.isShared);
   };
 
-  return (
+  // Portal to document.body so the overlay escapes the view's motion.div
+  // wrapper: an ancestor with `transform` (even translateY(0)) becomes the
+  // containing block for position:fixed descendants and traps them in a
+  // sub-stacking-context below the fixed ActionBar/sidebar, hiding the modal.
+  return createPortal(
     <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/60 p-4" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="modal-box max-w-2xl max-h-[90vh] overflow-y-auto">
         <h3 className="text-lg font-bold mb-4">
@@ -550,7 +555,8 @@ function McpEditModal({
           <Button variant="primary" onClick={handleSave} disabled={!draft.name.trim()}>Save</Button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

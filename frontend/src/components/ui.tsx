@@ -4,6 +4,7 @@
 
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { motion } from "motion/react";
 
 type ButtonVariant = "primary" | "secondary" | "ghost";
@@ -236,7 +237,11 @@ export function Modal({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   });
-  return (
+  // Portal to document.body so the overlay escapes the view's motion.div
+  // wrapper: an ancestor with `transform` (even translateY(0)) becomes the
+  // containing block for position:fixed descendants and traps them in a
+  // sub-stacking-context below the fixed ActionBar/sidebar, hiding the modal.
+  return createPortal(
     <div
       className="fixed inset-0 z-[1000] flex items-center justify-center"
       onClick={(e) => {
@@ -267,7 +272,8 @@ export function Modal({
         <h3 className="text-lg font-bold text-warning">{title}</h3>
         <div className="mt-3">{children}</div>
       </motion.div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
