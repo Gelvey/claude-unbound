@@ -177,15 +177,17 @@ export function AdminStoreProvider({ children }: { children: ReactNode }) {
     try {
       const result = await providersApi.getLocalStatus();
       setLastChecked(new Date());
-      const next = new Map(localStatus);
-      for (const provider of result.providers) {
-        next.set(provider.provider_id, provider);
-      }
-      setLocalStatus(next);
+      setLocalStatus((prev) => {
+        const next = new Map(prev);
+        for (const provider of result.providers) {
+          next.set(provider.provider_id, provider);
+        }
+        return next;
+      });
     } catch {
       // Swallow transient polling errors.
     }
-  }, [localStatus]);
+  }, []);
 
   const reload = useCallback(async () => {
     showMessage("Loading admin config");
@@ -201,6 +203,7 @@ export function AdminStoreProvider({ children }: { children: ReactNode }) {
       setConfigPath(cfg.paths.managed);
       await loadModuleTabs();
       await refreshLocalStatus();
+      showMessage("");
     } catch (err) {
       showMessage(err instanceof Error ? err.message : "Failed to load config", "error");
     } finally {
