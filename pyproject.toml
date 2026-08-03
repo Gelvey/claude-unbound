@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "free-claude-code"
-version = "2.32.0"
+version = "2.32.1"
 description = "Multi-provider proxy for Claude Code and Codex: routes Anthropic Messages and OpenAI Responses traffic to free, paid, or local models with prompt-cache affinity, long-context fallback routing, opt-in HTTP/2, uvloop/orjson-accelerated low-latency streaming, and cache/cost metrics passthrough"
 readme = "README.md"
 requires-python = ">=3.14.0"
@@ -84,6 +84,10 @@ dev = [
     "ty>=0.0.64",
     "ruff>=0.16.0",
     "pytest-xdist>=3.8.0",
+    # Starlette's TestClient prefers httpx2 over httpx; without it the
+    # fastapi.testclient import emits a StarletteDeprecationWarning. Kept
+    # dev-only — production code uses httpx (see [project] dependencies).
+    "httpx2>=2.9.1",
 ]
 
 [tool.ruff]

@@ -8,26 +8,32 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from api.app import create_app
 
 
-def _local_client(app) -> TestClient:
+def _local_client(app: FastAPI) -> TestClient:
     return TestClient(app, client=("127.0.0.1", 50000))
 
 
 @pytest.fixture
-def client(graphify_tmp_home: Path, monkeypatch) -> TestClient:
-    """Provide a TestClient with Graphify enabled in cached settings."""
+def app(graphify_tmp_home: Path, monkeypatch) -> FastAPI:
+    """Provide a FastAPI app with Graphify enabled in cached settings."""
     monkeypatch.setenv("GRAPHIFY_ENABLED", "true")
     monkeypatch.setenv("GRAPHIFY_API_KEY", "secret")
-    app = create_app(lifespan_enabled=False)
+    return create_app(lifespan_enabled=False)
+
+
+@pytest.fixture
+def client(app: FastAPI) -> TestClient:
+    """Provide a TestClient with Graphify enabled in cached settings."""
     return _local_client(app)
 
 
 @pytest.fixture
-def _mock_running_manager(client: TestClient):
+def _mock_running_manager(app: FastAPI):
     """Attach a mock GraphifyManager that appears running."""
     manager = MagicMock()
     manager.is_running = True
@@ -45,7 +51,7 @@ def _mock_running_manager(client: TestClient):
         }
     )
     manager.health_check = AsyncMock(return_value={"status": "healthy"})
-    client.app.state.graphify_manager = manager
+    app.state.graphify_manager = manager
     return manager
 
 
@@ -71,10 +77,11 @@ def test_status_returns_manager_state(
 
 def test_setup_runs_manager_setup(
     client: TestClient,
+    app: FastAPI,
 ) -> None:
     manager = AsyncMock()
     manager.setup.return_value = {"ready": True, "python": "/fake/python"}
-    client.app.state.graphify_manager = manager
+    app.state.graphify_manager = manager
 
     response = client.post("/admin/api/graphify/setup")
 
@@ -119,6 +126,7 @@ def test_projects_crud(
 @pytest.mark.asyncio
 async def test_index_project_routes_to_manager(
     client: TestClient,
+    app: FastAPI,
     graphify_tmp_home: Path,
 ) -> None:
     project_path = str(graphify_tmp_home / "repo")
@@ -135,7 +143,7 @@ async def test_index_project_routes_to_manager(
         "status": "started",
         "path": project_path,
     }
-    client.app.state.graphify_manager = manager
+    app.state.graphify_manager = manager
 
     path_b64 = (
         base64.urlsafe_b64encode(project_path.encode("utf-8"))
