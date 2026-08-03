@@ -53,7 +53,10 @@ def _shell_interpreter() -> str:
 def test_ci_sh_runs_ci_checks_in_order() -> None:
     text = _script_text("ci.sh")
 
-    assert 'CHECK_ORDER="suppressions ruff-format ruff-check ty pytest"' in text
+    assert (
+        'CHECK_ORDER="suppressions ruff-format ruff-check ty pytest admin-build"'
+        in text
+    )
     assert "grep -rE" in text
     assert "Fix the underlying type errors instead" in text
     assert "--exclude-dir=.venv" in text
@@ -66,7 +69,12 @@ def test_ci_sh_runs_ci_checks_in_order() -> None:
     assert "--skip" in text
     assert "--dry-run" in text
     assert "uv is required but was not found on PATH" in text
-    assert "npm" not in text
+    # admin-build is a Node-guarded check: npm is used only there and skips
+    # gracefully when npm is absent locally (the CI admin-build job is the
+    # hard gate).
+    assert "npm ci" in text
+    assert "npm run build" in text
+    assert "command -v npm" in text
     assert "smoke/" not in text
     assert "uv self update" not in text
 

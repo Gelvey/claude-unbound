@@ -18,6 +18,7 @@
 - Do not add `# type: ignore` or `# ty: ignore`; fix the underlying type issue.
 - All 5 checks are mirrored in `scripts/ci.sh` and enforced in `tests.yml` on push/merge (parallel jobs: suppression grep, ruff-format, ruff-check, ty, pytest).
 - Branch protection: set **required status checks** to **all** of those statuses (e.g. **Ban type ignore suppressions**, **ruff-format**, **ruff-check**, **ty**, **pytest**—use the exact labels GitHub shows, which may be prefixed with **CI /**). Remove **ci** from required checks if it was previously added for the old gate job.
+- **Admin UI**: any change under `frontend/` (or anything affecting the admin UI) requires running `npm run build` and committing the regenerated `api/admin_static/` artefacts in the same change; do not hand-edit `api/admin_static/admin.js`, `admin.css`, or `index.html` — they are build outputs. The `admin-build` CI job verifies freshness.
 
 ## IDENTITY & CONTEXT
 
