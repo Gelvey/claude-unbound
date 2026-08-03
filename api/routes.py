@@ -124,6 +124,17 @@ async def probe_health():
     return _probe_response("GET, HEAD, OPTIONS")
 
 
+@router.api_route("/api/hello", methods=["HEAD", "OPTIONS"])
+async def probe_api_hello():
+    """Respond to Claude Desktop gateway liveness probes.
+
+    Claude Desktop polls <gateway base>/api/hello with HEAD to confirm the
+    gateway is reachable before sending inference traffic. Without this
+    handler the probe 404s and pollutes the server log.
+    """
+    return _probe_response("HEAD, OPTIONS")
+
+
 @router.get("/v1/models", response_model=ModelsListResponse)
 async def list_models(
     request: Request,
