@@ -50,7 +50,15 @@ export function getMcpConfig(): Promise<McpConfig> {
   return api("/admin/api/mcp/config");
 }
 
-export function applyMcpConfig(config: McpConfig): Promise<{ applied: boolean; errors?: string[]; restart_hint?: string }> {
+export interface McpConfigResult {
+  valid: boolean;
+  errors: string[];
+  applied: boolean;
+  path: string | null;
+  restart_hint: string | null;
+}
+
+export function applyMcpConfig(config: McpConfig): Promise<McpConfigResult> {
   return api("/admin/api/mcp/config/apply", {
     method: "POST",
     body: JSON.stringify(config),
@@ -90,7 +98,7 @@ export function sftpImport(mode: "merge" | "replace"): Promise<{ ok: boolean; er
   });
 }
 
-export function composioSetup(api_key: string, port?: number): Promise<{ applied: boolean; errors?: string[] }> {
+export function composioSetup(api_key: string, port?: number): Promise<McpConfigResult> {
   return api("/admin/api/mcp/composio/setup", {
     method: "POST",
     body: JSON.stringify({ api_key, ...(port ? { port } : {}) }),

@@ -4,10 +4,10 @@ import { ModelConfigView } from "./ModelConfigView";
 import { MessagingView } from "./MessagingView";
 import { CloudflareView } from "./CloudflareView";
 import { DiagnosticsView } from "./DiagnosticsView";
-import { McpPlaceholder } from "./McpPlaceholder";
-import { FreebuffPlaceholder } from "./FreebuffPlaceholder";
-import { GraphifyPlaceholder } from "./GraphifyPlaceholder";
-import { OpenRouterPlaceholder } from "./OpenRouterPlaceholder";
+import { McpView } from "./McpView";
+import { FreebuffView } from "./FreebuffView";
+import { GraphifyView } from "./GraphifyView";
+import { OpenRouterView } from "./OpenRouterView";
 
 export function AdminViews() {
   const { activeView, config } = useAdminStore();
@@ -25,13 +25,13 @@ export function AdminViews() {
     case "diagnostics":
       return <DiagnosticsView />;
     case "mcp":
-      return <McpPlaceholder />;
+      return <McpView />;
     case "freebuff":
-      return <FreebuffPlaceholder />;
+      return <FreebuffView />;
     case "graphify":
-      return <GraphifyPlaceholder />;
+      return <GraphifyView />;
     case "openrouter_policy":
-      return <OpenRouterPlaceholder />;
+      return <OpenRouterView />;
     default:
       // Module tabs are rendered by the shell, not here.
       return null;

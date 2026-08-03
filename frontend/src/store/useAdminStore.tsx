@@ -315,6 +315,12 @@ export function AdminStoreProvider({ children }: { children: ReactNode }) {
         return;
       }
       await reload();
+      // Re-fire activation so the active complex view (mcp/freebuff/graphify/
+      // openrouter_policy) reloads its view-specific state after a global apply,
+      // mirroring the old admin.js apply() post-apply reload.
+      for (const cb of activationCallbacksRef.current) {
+        cb(activeView);
+      }
       const pending = restart.required ? restart.fields || [] : result.pending_fields || [];
       showMessage(
         pending.length
@@ -325,7 +331,7 @@ export function AdminStoreProvider({ children }: { children: ReactNode }) {
     } catch (err) {
       showMessage(err instanceof Error ? err.message : "Apply failed", "error");
     }
-  }, [allCurrentValues, reload, showMessage]);
+  }, [allCurrentValues, reload, showMessage, activeView]);
 
   const testProvider = useCallback(
     async (providerId: string): Promise<void> => {

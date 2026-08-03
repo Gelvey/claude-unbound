@@ -3,18 +3,31 @@ import { api } from "./client";
 export interface GraphifyProject {
   path: string;
   name?: string;
+  graphify_out?: string;
   status: string;
   last_indexed: string | null;
   error_message?: string;
 }
 
+export interface GraphifyProjectSummary {
+  path: string;
+  name: string;
+  status: string;
+  last_indexed: string | null;
+}
+
 export interface GraphifyStatus {
+  enabled?: boolean;
   running: boolean;
   port?: number;
+  base_url?: string;
   python?: string;
   last_error?: string;
   projects_count?: number;
+  projects_summary?: GraphifyProjectSummary[];
   mcp_registered?: boolean;
+  owns_process?: boolean;
+  adopted?: boolean;
   llm_backend?: string;
   llm_model?: string;
   code_only?: boolean;
@@ -22,11 +35,40 @@ export interface GraphifyStatus {
   index_queue?: { path: string; status: string }[];
 }
 
+export interface GraphifyGraph {
+  present: boolean;
+  node_count?: number;
+  link_count?: number;
+  hyperedge_count?: number;
+  built_at_commit?: string;
+  file_types?: Record<string, number>;
+  communities?: number;
+  reason?: string;
+  error?: string;
+}
+
+export interface GraphifyIndexStatus {
+  status: string;
+  last_indexed?: string | null;
+  error_message?: string;
+  queue_position?: number;
+  task?: { path: string; status: string; result?: unknown; error_message?: string };
+  current_indexing?: string;
+}
+
 export function graphifyStatus(): Promise<GraphifyStatus> {
   return api("/admin/api/graphify/status");
 }
 
-export function graphifyHealth(): Promise<{ status: string; error?: string }> {
+export interface GraphifyHealth {
+  status: string;
+  http_status?: number;
+  error?: string;
+  server_info?: Record<string, unknown>;
+  data?: Record<string, unknown>;
+}
+
+export function graphifyHealth(): Promise<GraphifyHealth> {
   return api("/admin/api/graphify/health");
 }
 
@@ -68,11 +110,11 @@ export function graphifyIndex(pathB64: string): Promise<{ success: boolean; stat
   });
 }
 
-export function graphifyIndexStatus(pathB64: string): Promise<{ status: string; queue_position?: number; error_message?: string }> {
+export function graphifyIndexStatus(pathB64: string): Promise<GraphifyIndexStatus> {
   return api(`/admin/api/graphify/projects/${pathB64}/index/status`);
 }
 
-export function graphifyGraph(pathB64: string): Promise<{ present: boolean; node_count?: number; link_count?: number; hyperedge_count?: number; built_at_commit?: string; reason?: string }> {
+export function graphifyGraph(pathB64: string): Promise<GraphifyGraph> {
   return api(`/admin/api/graphify/projects/${pathB64}/graph`);
 }
 
