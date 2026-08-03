@@ -54,7 +54,7 @@ def test_ci_sh_runs_ci_checks_in_order() -> None:
     text = _script_text("ci.sh")
 
     assert (
-        'CHECK_ORDER="suppressions ruff-format ruff-check ty pytest admin-build"'
+        'CHECK_ORDER="suppressions ruff-format ruff-check ty pytest admin-build admin-test"'
         in text
     )
     assert "grep -rE" in text
