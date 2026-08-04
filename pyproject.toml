@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "free-claude-code"
-version = "2.32.4"
+version = "2.33.0"
 description = "Multi-provider proxy for Claude Code and Codex: routes Anthropic Messages and OpenAI Responses traffic to free, paid, or local models with prompt-cache affinity, long-context fallback routing, opt-in HTTP/2, uvloop/orjson-accelerated low-latency streaming, and cache/cost metrics passthrough"
 readme = "README.md"
 requires-python = ">=3.14.0"
@@ -23,6 +23,7 @@ dependencies = [
     "discord.py>=2.7.1",
     "pydantic-settings>=2.14.2",
     "openai>=2.50.0",
+    "google-auth[requests]>=2.40.0",
     "loguru>=0.7.0",
     "aiohttp>=3.14.3",
     "jsonschema>=4.25.0",

@@ -136,6 +136,17 @@ class Settings(BaseSettings):
     # ==================== Google Gemini (Google AI Studio) ====================
     gemini_api_key: str = Field(default="", validation_alias="GEMINI_API_KEY")
 
+    # ==================== Google Vertex AI (Google Cloud) ====================
+    # Uses Application Default Credentials (ADC), not an API key.
+    # Run: gcloud auth application-default login
+    vertex_ai_project_id: str = Field(
+        default="", validation_alias="VERTEX_AI_PROJECT_ID"
+    )
+    vertex_ai_location: str = Field(
+        default="global", validation_alias="VERTEX_AI_LOCATION"
+    )
+    vertex_ai_base_url: str = Field(default="", validation_alias="VERTEX_AI_BASE_URL")
+
     # ==================== Groq (OpenAI-compatible) ====================
     groq_api_key: str = Field(default="", validation_alias="GROQ_API_KEY")
 
@@ -353,6 +364,7 @@ class Settings(BaseSettings):
     zai_proxy: str = Field(default="", validation_alias="ZAI_PROXY")
     fireworks_proxy: str = Field(default="", validation_alias="FIREWORKS_PROXY")
     gemini_proxy: str = Field(default="", validation_alias="GEMINI_PROXY")
+    vertex_ai_proxy: str = Field(default="", validation_alias="VERTEX_AI_PROXY")
     groq_proxy: str = Field(default="", validation_alias="GROQ_PROXY")
     cerebras_proxy: str = Field(default="", validation_alias="CEREBRAS_PROXY")
     cloudflare_ai_proxy: str = Field(default="", validation_alias="CLOUDFLARE_AI_PROXY")

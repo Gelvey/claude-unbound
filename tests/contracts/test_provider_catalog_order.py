@@ -8,6 +8,7 @@ _EXPECTED_PROVIDER_ORDER: tuple[str, ...] = (
     "nvidia_nim",
     "open_router",
     "gemini",
+    "vertex_ai",
     "deepseek",
     "mistral",
     "mistral_codestral",

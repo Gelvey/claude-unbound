@@ -128,6 +128,31 @@ def _create_gemini(config: ProviderConfig, _settings: Settings) -> BaseProvider:
     return GeminiProvider(config)
 
 
+def _create_vertex_ai(config: ProviderConfig, settings: Settings) -> BaseProvider:
+    from providers.exceptions import AuthenticationError
+    from providers.vertex_ai import VertexAIProvider
+    from providers.vertex_ai.auth import GoogleAccessTokenProvider, VertexAIAuth
+    from providers.vertex_ai.endpoint import vertex_openai_base_url
+
+    project_id = settings.vertex_ai_project_id.strip()
+    if not project_id:
+        raise AuthenticationError(
+            "VERTEX_AI_PROJECT_ID is not set. Add it to your .env file. "
+            "Find your project ID in the Google Cloud Console."
+        )
+    location = settings.vertex_ai_location.strip() or "global"
+    base_url = config.base_url or vertex_openai_base_url(project_id, location)
+    token_provider = GoogleAccessTokenProvider(proxy=config.proxy)
+    http_auth = VertexAIAuth(token_provider, project_id)
+    composed_config = config.model_copy(update={"base_url": base_url})
+    return VertexAIProvider(
+        composed_config,
+        project_id=project_id,
+        location=location,
+        http_auth=http_auth,
+    )
+
+
 def _create_groq(config: ProviderConfig, _settings: Settings) -> BaseProvider:
     from providers.groq import GroqProvider
 
@@ -182,6 +207,7 @@ PROVIDER_FACTORIES: dict[str, ProviderFactory] = {
     "nvidia_nim": _create_nvidia_nim,
     "open_router": _create_open_router,
     "gemini": _create_gemini,
+    "vertex_ai": _create_vertex_ai,
     "deepseek": _create_deepseek,
     "mistral": _create_mistral,
     "mistral_codestral": _create_mistral_codestral,

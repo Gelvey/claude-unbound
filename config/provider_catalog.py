@@ -34,6 +34,8 @@ OPENCODE_GO_DEFAULT_BASE = "https://opencode.ai/zen/go/v1"
 ZAI_DEFAULT_BASE = "https://api.z.ai/api/anthropic/v1"
 # Google AI Studio Gemini API OpenAI-compat layer (not Vertex AI).
 GEMINI_DEFAULT_BASE = "https://generativelanguage.googleapis.com/v1beta/openai/"
+# Google Vertex AI API root; factory composes the project-scoped OpenAI-compat URL.
+VERTEX_AI_DEFAULT_BASE = "https://aiplatform.googleapis.com"
 GROQ_DEFAULT_BASE = "https://api.groq.com/openai/v1"
 CEREBRAS_DEFAULT_BASE = "https://api.cerebras.ai/v1"
 # Cloudflare Workers AI OpenAI-compat layer; ``CLOUDFLARE_AI_ACCOUNT_ID`` is
@@ -90,6 +92,15 @@ PROVIDER_CATALOG: dict[str, ProviderDescriptor] = {
         credential_attr="gemini_api_key",
         default_base_url=GEMINI_DEFAULT_BASE,
         proxy_attr="gemini_proxy",
+        capabilities=("chat", "streaming", "tools", "thinking", "rate_limit"),
+    ),
+    "vertex_ai": ProviderDescriptor(
+        provider_id="vertex_ai",
+        transport_type="openai_chat",
+        static_credential="vertex-ai",
+        default_base_url=None,
+        base_url_attr="vertex_ai_base_url",
+        proxy_attr="vertex_ai_proxy",
         capabilities=("chat", "streaming", "tools", "thinking", "rate_limit"),
     ),
     "deepseek": ProviderDescriptor(

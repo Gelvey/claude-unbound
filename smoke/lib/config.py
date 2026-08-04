@@ -55,6 +55,7 @@ PROVIDER_SMOKE_DEFAULT_MODELS: dict[str, str] = {
     "opencode_go": "opencode_go/minimax-m2.7",
     "zai": "zai/glm-5.1",
     "gemini": "gemini/models/gemini-3.1-flash-lite",
+    "vertex_ai": "vertex_ai/google/gemini-2.5-flash",
     "groq": "groq/llama-3.3-70b-versatile",
     "cerebras": "cerebras/llama3.1-8b",
     "cloudflare_ai": "cloudflare_ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast",
@@ -254,6 +255,8 @@ class SmokeConfig:
             return bool(self.settings.zai_api_key.strip())
         if provider == "gemini":
             return bool(self.settings.gemini_api_key.strip())
+        if provider == "vertex_ai":
+            return bool(self.settings.vertex_ai_project_id.strip())
         if provider == "groq":
             return bool(self.settings.groq_api_key.strip())
         if provider == "cerebras":
