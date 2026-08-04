@@ -12,10 +12,14 @@ from api.admin_env import _load_value_state
 from api.admin_manifest import FIELDS
 from config.provider_catalog import PROVIDER_CATALOG
 
-# Extra required env vars beyond the primary credential_env for providers that
-# need multiple credentials.  Checked by :func:`provider_config_status`.
+# Extra required env vars beyond the primary credential for providers that
+# need additional settings.  Checked by :func:`provider_config_status`.
+# For API-key providers this is beyond ``credential_env``; for ADC providers
+# (``static_credential``) it is the project id the static credential alone
+# does not carry.
 _MULTI_CREDENTIAL_ENVS: dict[str, tuple[str, ...]] = {
     "cloudflare_ai": ("CLOUDFLARE_AI_ACCOUNT_ID",),
+    "vertex_ai": ("VERTEX_AI_PROJECT_ID",),
 }
 
 
@@ -27,7 +31,7 @@ def provider_config_status(
     state = state or _load_value_state()
     statuses: list[dict[str, Any]] = []
     for provider_id, descriptor in PROVIDER_CATALOG.items():
-        if descriptor.credential_env is None:
+        if "local" in descriptor.capabilities:
             base_url = ""
             if descriptor.base_url_attr is not None:
                 base_url = _value_for_settings_attr(state, descriptor.base_url_attr)
@@ -42,8 +46,13 @@ def provider_config_status(
             )
             continue
 
-        value = str(state.get(descriptor.credential_env, {}).get("value", ""))
-        primary_ok = bool(value.strip())
+        # Remote: API key (credential_env) or ADC (static_credential).
+        if descriptor.credential_env is not None:
+            value = str(state.get(descriptor.credential_env, {}).get("value", ""))
+            primary_ok = bool(value.strip())
+        else:
+            # static_credential is always present (e.g. Vertex AI ADC).
+            primary_ok = True
 
         missing_extras: list[str] = []
         for extra_env in _MULTI_CREDENTIAL_ENVS.get(provider_id, ()):
