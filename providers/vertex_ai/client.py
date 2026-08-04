@@ -8,6 +8,9 @@ import httpx
 
 from providers.base import ProviderConfig
 from providers.exceptions import ModelListResponseError
+from providers.transports.openai_chat.google_signatures import (
+    record_tool_call_extra_content,
+)
 from providers.transports.openai_chat.transport import OpenAIChatTransport
 
 from .auth import GoogleAccessTokenProvider, VertexAIAuth
@@ -30,6 +33,7 @@ class VertexAIProvider(OpenAIChatTransport):
     ) -> None:
         self._project_id = project_id.strip()
         self._location = location.strip().lower()
+        self._tool_call_extra_content_by_id: dict[str, dict[str, Any]] = {}
         self._access_token_provider = (
             access_token_provider or GoogleAccessTokenProvider(proxy=config.proxy)
         )
@@ -67,6 +71,14 @@ class VertexAIProvider(OpenAIChatTransport):
         return build_request_body(
             request,
             thinking_enabled=self._is_thinking_enabled(request, thinking_enabled),
+            tool_call_extra_content_by_id=self._tool_call_extra_content_by_id,
+        )
+
+    def _record_tool_call_extra_content(
+        self, tool_call_id: str, extra_content: dict[str, Any]
+    ) -> None:
+        record_tool_call_extra_content(
+            self._tool_call_extra_content_by_id, tool_call_id, extra_content
         )
 
     async def list_model_ids(self) -> frozenset[str]:

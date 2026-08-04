@@ -184,6 +184,193 @@ def test_build_request_body_merges_caller_nested_google():
     assert tc.get("include_thoughts") is True
 
 
+def test_build_request_body_preserves_tool_call_extra_content():
+    req = MockRequest(
+        system=None,
+        model="google/gemini-2.5-flash",
+        messages=[
+            MockMessage("user", "Find files"),
+            MockMessage(
+                "assistant",
+                [
+                    {
+                        "type": "tool_use",
+                        "id": "function-call-1",
+                        "name": "Glob",
+                        "input": {"pattern": "*.py"},
+                        "extra_content": {
+                            "google": {"thought_signature": "sig-from-client"}
+                        },
+                    }
+                ],
+            ),
+            MockMessage(
+                "user",
+                [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "function-call-1",
+                        "content": "[]",
+                    }
+                ],
+            ),
+        ],
+    )
+    body = build_request_body(req, thinking_enabled=True)
+    tool_call = body["messages"][1]["tool_calls"][0]
+    assert tool_call["extra_content"] == {
+        "google": {"thought_signature": "sig-from-client"}
+    }
+
+
+def test_build_request_body_replays_cached_tool_call_signature():
+    """A streamed signature recorded earlier is replayed on the next turn."""
+    req = MockRequest(
+        system=None,
+        model="google/gemini-2.5-flash",
+        messages=[
+            MockMessage("user", "Find files"),
+            MockMessage(
+                "assistant",
+                [
+                    {
+                        "type": "tool_use",
+                        "id": "function-call-1",
+                        "name": "Glob",
+                        "input": {"pattern": "*.py"},
+                    }
+                ],
+            ),
+            MockMessage(
+                "user",
+                [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "function-call-1",
+                        "content": "[]",
+                    }
+                ],
+            ),
+        ],
+    )
+    cache = {"function-call-1": {"google": {"thought_signature": "sig-from-cache"}}}
+    body = build_request_body(
+        req, thinking_enabled=True, tool_call_extra_content_by_id=cache
+    )
+    tool_call = body["messages"][1]["tool_calls"][0]
+    assert tool_call["extra_content"] == {
+        "google": {"thought_signature": "sig-from-cache"}
+    }
+
+
+def test_build_request_body_adds_gemini3_current_turn_fallback_signature():
+    """Gemini 3 assistant tool-calls without a signature get the skip sentinel."""
+    req = MockRequest(
+        system=None,
+        model="google/gemini-3-pro",
+        messages=[
+            MockMessage("user", "Find files"),
+            MockMessage(
+                "assistant",
+                [
+                    {
+                        "type": "tool_use",
+                        "id": "function-call-1",
+                        "name": "Glob",
+                        "input": {"pattern": "*.py"},
+                    },
+                    {
+                        "type": "tool_use",
+                        "id": "function-call-2",
+                        "name": "Read",
+                        "input": {"file_path": "a.py"},
+                    },
+                ],
+            ),
+            MockMessage(
+                "user",
+                [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "function-call-1",
+                        "content": "[]",
+                    },
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "function-call-2",
+                        "content": "contents",
+                    },
+                ],
+            ),
+        ],
+    )
+    body = build_request_body(req, thinking_enabled=True)
+    tool_calls = body["messages"][1]["tool_calls"]
+    from providers.transports.openai_chat.google_signatures import (
+        SKIP_THOUGHT_SIGNATURE_VALIDATOR,
+    )
+
+    assert tool_calls[0]["extra_content"] == {
+        "google": {"thought_signature": SKIP_THOUGHT_SIGNATURE_VALIDATOR}
+    }
+    assert "extra_content" not in tool_calls[1]
+
+
+def test_build_request_body_no_fallback_for_non_gemini3():
+    """Gemini 2.5 does not receive the skip sentinel on missing signatures."""
+    req = MockRequest(
+        system=None,
+        model="google/gemini-2.5-flash",
+        messages=[
+            MockMessage("user", "Find files"),
+            MockMessage(
+                "assistant",
+                [
+                    {
+                        "type": "tool_use",
+                        "id": "function-call-1",
+                        "name": "Glob",
+                        "input": {"pattern": "*.py"},
+                    }
+                ],
+            ),
+            MockMessage(
+                "user",
+                [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "function-call-1",
+                        "content": "[]",
+                    }
+                ],
+            ),
+        ],
+    )
+    body = build_request_body(req, thinking_enabled=True)
+    tool_call = body["messages"][1]["tool_calls"][0]
+    assert "extra_content" not in tool_call
+
+
+@pytest.mark.asyncio
+async def test_provider_records_streamed_tool_call_extra_content():
+    """The provider overrides the recorder so streamed signatures are cached."""
+    with (
+        patch("providers.transports.openai_chat.transport.AsyncOpenAI"),
+        patch("httpx.AsyncClient"),
+    ):
+        provider = VertexAIProvider(
+            _vertex_config(),
+            project_id="test-project",
+            location="global",
+        )
+    provider._record_tool_call_extra_content(
+        "function-call-1", {"google": {"thought_signature": "sig-stream"}}
+    )
+    assert provider._tool_call_extra_content_by_id == {
+        "function-call-1": {"google": {"thought_signature": "sig-stream"}}
+    }
+
+
 # --- Model listing ---
 
 

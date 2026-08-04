@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
 from typing import Any
 
 from providers.base import ProviderConfig
 from providers.defaults import GEMINI_DEFAULT_BASE
 from providers.transports.openai_chat import OpenAIChatTransport
+from providers.transports.openai_chat.google_signatures import (
+    record_tool_call_extra_content,
+)
 
 from .request import build_request_body
-
-_MAX_TOOL_CALL_EXTRA_CONTENT_CACHE = 4096
 
 
 class GeminiProvider(OpenAIChatTransport):
@@ -29,15 +29,9 @@ class GeminiProvider(OpenAIChatTransport):
     def _record_tool_call_extra_content(
         self, tool_call_id: str, extra_content: dict[str, Any]
     ) -> None:
-        if (
-            tool_call_id not in self._tool_call_extra_content_by_id
-            and len(self._tool_call_extra_content_by_id)
-            >= _MAX_TOOL_CALL_EXTRA_CONTENT_CACHE
-        ):
-            self._tool_call_extra_content_by_id.pop(
-                next(iter(self._tool_call_extra_content_by_id))
-            )
-        self._tool_call_extra_content_by_id[tool_call_id] = deepcopy(extra_content)
+        record_tool_call_extra_content(
+            self._tool_call_extra_content_by_id, tool_call_id, extra_content
+        )
 
     def _build_request_body(
         self, request: Any, thinking_enabled: bool | None = None

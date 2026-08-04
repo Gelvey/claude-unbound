@@ -10,6 +10,9 @@ from loguru import logger
 from core.anthropic import ReasoningReplayMode, build_base_request_body
 from core.anthropic.conversion import OpenAIConversionError
 from providers.exceptions import InvalidRequestError
+from providers.transports.openai_chat.google_signatures import (
+    apply_tool_call_signatures,
+)
 
 
 def _ensure_dict(container: dict[str, Any], key: str) -> dict[str, Any]:
@@ -32,6 +35,7 @@ def build_request_body(
     request_data: Any,
     *,
     thinking_enabled: bool,
+    tool_call_extra_content_by_id: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build OpenAI-format request body from an Anthropic request for Vertex AI."""
     logger.debug(
@@ -61,6 +65,11 @@ def build_request_body(
 
     if extra_body:
         body["extra_body"] = extra_body
+
+    apply_tool_call_signatures(
+        body,
+        tool_call_extra_content_by_id=tool_call_extra_content_by_id,
+    )
 
     logger.debug(
         "VERTEX_AI_REQUEST: conversion done model={} msgs={} tools={}",
