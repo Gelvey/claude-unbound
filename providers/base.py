@@ -65,7 +65,10 @@ def provider_http_limits(config: ProviderConfig) -> httpx.Limits:
 
 
 def provider_http_client(
-    config: ProviderConfig, *, base_url: str = ""
+    config: ProviderConfig,
+    *,
+    base_url: str = "",
+    auth: httpx.Auth | None = None,
 ) -> httpx.AsyncClient:
     """Build the shared httpx client for a provider transport.
 
@@ -78,6 +81,7 @@ def provider_http_client(
         timeout=provider_http_timeout(config),
         limits=provider_http_limits(config),
         http2=config.http2,
+        auth=auth,
     )
 
 

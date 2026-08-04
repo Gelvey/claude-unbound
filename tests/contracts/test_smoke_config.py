@@ -38,6 +38,7 @@ def _settings(**overrides):
         "opencode_api_key": "",
         "zai_api_key": "",
         "gemini_api_key": "",
+        "vertex_ai_project_id": "",
         "groq_api_key": "",
         "cerebras_api_key": "",
         "cloudflare_ai_api_key": "",

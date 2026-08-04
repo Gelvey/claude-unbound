@@ -29,6 +29,7 @@ from providers.registry import (
     build_provider_config,
     create_provider,
 )
+from providers.vertex_ai import VertexAIProvider
 from providers.wafer import WaferProvider
 from providers.zai import ZaiProvider
 
@@ -53,6 +54,7 @@ def _make_settings(**overrides):
         "kimi_api_key": "test_kimi_key",
         "fireworks_api_key": "test_fireworks_key",
         "gemini_api_key": "test_gemini_key",
+        "vertex_ai_project_id": "test-project-id",
         "groq_api_key": "test_groq_key",
         "cerebras_api_key": "test_cerebras_key",
     }
@@ -174,6 +176,7 @@ def test_create_provider_instantiates_each_builtin():
         "opencode_go": OpenCodeProvider,
         "zai": ZaiProvider,
         "gemini": GeminiProvider,
+        "vertex_ai": VertexAIProvider,
         "groq": GroqProvider,
         "cerebras": CerebrasProvider,
     }

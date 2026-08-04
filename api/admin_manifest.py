@@ -252,6 +252,41 @@ FIELDS: tuple[ConfigFieldSpec, ...] = (
         ),
     ),
     ConfigFieldSpec(
+        "VERTEX_AI_PROJECT_ID",
+        "Vertex AI Project ID",
+        "providers",
+        settings_attr="vertex_ai_project_id",
+        description=(
+            "Google Cloud project ID for Vertex AI. Uses Application Default "
+            "Credentials (ADC) instead of an API key — run "
+            "`gcloud auth application-default login` to authenticate. "
+            "Bills against your Google Cloud $300 free trial credit."
+        ),
+    ),
+    ConfigFieldSpec(
+        "VERTEX_AI_LOCATION",
+        "Vertex AI Location",
+        "providers",
+        settings_attr="vertex_ai_location",
+        default="global",
+        description=(
+            "Vertex AI region. 'global' (default) routes to the global endpoint "
+            "and is required for Gemini 3.x preview models. Regional endpoints "
+            "(e.g. 'us-central1') may have lower latency for GA models."
+        ),
+    ),
+    ConfigFieldSpec(
+        "VERTEX_AI_BASE_URL",
+        "Vertex AI Base URL Override",
+        "providers",
+        settings_attr="vertex_ai_base_url",
+        advanced=True,
+        description=(
+            "Optional full URL override for the Vertex AI OpenAI-compat endpoint. "
+            "Empty (default) composes the URL from project ID and location."
+        ),
+    ),
+    ConfigFieldSpec(
         "GROQ_API_KEY",
         "Groq API Key",
         "providers",
@@ -674,6 +709,15 @@ FIELDS: tuple[ConfigFieldSpec, ...] = (
         "providers",
         "secret",
         settings_attr="gemini_proxy",
+        secret=True,
+        advanced=True,
+    ),
+    ConfigFieldSpec(
+        "VERTEX_AI_PROXY",
+        "Vertex AI Proxy",
+        "providers",
+        "secret",
+        settings_attr="vertex_ai_proxy",
         secret=True,
         advanced=True,
     ),

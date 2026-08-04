@@ -6,6 +6,7 @@ from abc import abstractmethod
 from collections.abc import AsyncIterator, Callable, Iterator
 from typing import Any
 
+import httpx
 from loguru import logger
 from openai import AsyncOpenAI
 
@@ -48,6 +49,7 @@ class OpenAIChatTransport(BaseProvider):
         provider_name: str,
         base_url: str,
         api_key: str,
+        http_auth: httpx.Auth | None = None,
     ):
         super().__init__(config)
         self._provider_name = provider_name
@@ -62,7 +64,7 @@ class OpenAIChatTransport(BaseProvider):
         # Always create an explicit httpx client so keep-alive is controlled
         # here instead of falling back to httpx's 5s default expiry. Kept on
         # self so ancillary requests (e.g. model discovery) warm the same pool.
-        self._http_client = provider_http_client(config)
+        self._http_client = provider_http_client(config, auth=http_auth)
         self._client = AsyncOpenAI(
             api_key=self._api_key,
             base_url=self._base_url,
