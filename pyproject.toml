@@ -42,7 +42,7 @@ fcc-codex = "cli.entrypoints:launch_codex"
 
 [project.optional-dependencies]
 graphify = [
-    "graphifyy[mcp]>=0.9.29",
+    "graphifyy[mcp]>=0.9.31",
 ]
 voice = [
     "grpcio>=1.83.0",
