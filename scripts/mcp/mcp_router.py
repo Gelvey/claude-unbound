@@ -17,8 +17,11 @@ Architecture
 - When the LLM calls `use_server("stripe")`, this router opens an SSE
   client session to the backend, calls initialize+tools/list, and
   dynamically registers those tools under its own namespace
-  (`<backend>__<tool>`). The response tells the LLM to call
-  `tools/list` next so its view of available tools refreshes.
+  (`<backend>__<tool>`). On a successful activation, deactivation, or
+  config reload, the router emits an MCP
+  `notifications/tools/list_changed` notification so the client refreshes
+  its tool list without a session restart; the tool response also tells
+  the LLM to call `tools/list` as a fallback.
 - When the LLM calls an activated tool, the router forwards `tools/call`
   to the matching backend session and relays the response.
 
@@ -279,10 +282,10 @@ CONTROL_TOOL_SCHEMAS: dict[str, types.Tool] = {
 def _build_server(backends: dict[str, Backend]) -> Server:
     """Create a fresh MCP Server with handlers bound to the given backends.
 
-    Each client connection gets its own Server instance so its
-    initialization state is isolated. The backends dict is shared so
-    activated tools are visible across connections (Claude Code sessions
-    may reconnect and expect prior activations to persist).
+    Each client connection gets its own Server instance bound to a
+    per-connection ``backends`` dict, so activations are isolated per
+    session — one connection activating a backend does not surface its
+    tools to other connections.
     """
     server = Server("mcp-router")
 
@@ -302,6 +305,12 @@ def _build_server(backends: dict[str, Backend]) -> Server:
 
     @server.call_tool()
     async def call_tool(name: str, arguments: dict[str, Any]) -> list[types.Content]:
+        async def _notify_tools_changed() -> None:
+            try:
+                await server.request_context.session.send_tool_list_changed()
+            except Exception as e:
+                log.warning("Failed to emit tools/list_changed notification: %s", e)
+
         # Control tools
         if name == "list_servers":
             payload = [
@@ -336,6 +345,7 @@ def _build_server(backends: dict[str, Backend]) -> Server:
                     f"registered tools from `{target}` (advertised as "
                     f"`{tp}__<tool>`, e.g. `{tp}__get_version`)."
                 )
+                await _notify_tools_changed()
             return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
 
         if name == "list_active_servers":
@@ -360,10 +370,16 @@ def _build_server(backends: dict[str, Backend]) -> Server:
                     )
                 ]
             result = await _deactivate(target, backends)
+            if result.get("ok") and not result.get("already_inactive"):
+                await _notify_tools_changed()
             return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
 
         if name == "reload_servers":
             result = await _reload_config(backends)
+            if result.get("ok") and (
+                result.get("added") or result.get("updated") or result.get("removed")
+            ):
+                await _notify_tools_changed()
             return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
 
         # Dynamic tool: must be prefixed with the backend's spec-safe
@@ -415,7 +431,7 @@ def _build_server(backends: dict[str, Backend]) -> Server:
 
 
 # ---------------------------------------------------------------------------
-# Activation / deactivation (shared across connections)
+# Activation / deactivation (per-connection backends dict)
 # ---------------------------------------------------------------------------
 
 
@@ -773,9 +789,19 @@ async def _handle_client(
         log.exception("[%s] Server.run failed", conn_id)
     finally:
         log.info("[%s] client disconnected", conn_id)
+        # Deactivate all backends for this session so their background tasks are cancelled
+        with anyio.CancelScope(shield=True):
+            for b in list(backends.values()):
+                if b._session is not None:
+                    try:
+                        await _deactivate(b.name, backends)
+                    except Exception as e:
+                        log.warning(
+                            "[%s] error deactivating backend %r: %s", conn_id, b.name, e
+                        )
 
 
-async def serve_unix_socket(socket_path: str, backends: dict[str, Backend]) -> None:
+async def serve_unix_socket(socket_path: str) -> None:
     """Listen on a Unix socket and accept MCP client connections forever.
 
     Implementation note: ``anyio.create_unix_server`` was removed in
@@ -799,7 +825,14 @@ async def serve_unix_socket(socket_path: str, backends: dict[str, Backend]) -> N
     async def on_connect(
         reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
-        await _handle_client(reader, writer, backends)
+        try:
+            assert _CONFIG_PATH is not None
+            session_backends, _ = load_config(_CONFIG_PATH)
+        except Exception as e:
+            log.exception("Failed to load config for new connection: %s", e)
+            writer.close()
+            return
+        await _handle_client(reader, writer, session_backends)
 
     server = await asyncio.start_unix_server(on_connect, path=socket_path)
     # Restrict socket permissions.
@@ -852,14 +885,14 @@ def main() -> int:
     _CONFIG_PATH = Path(args.config)
     backends, _raw_cfg = load_config(_CONFIG_PATH)
     log.info(
-        "Loaded %d backends from %s: %s",
+        "Validated %d backends from %s: %s",
         len(backends),
         args.config,
         ", ".join(b.name for b in backends.values()),
     )
 
     with contextlib.suppress(KeyboardInterrupt):
-        anyio.run(serve_unix_socket, args.socket, backends)
+        anyio.run(serve_unix_socket, args.socket)
     return 0
 
 
