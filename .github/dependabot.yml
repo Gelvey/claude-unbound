@@ -7,6 +7,13 @@ updates:
     groups:
       minor-and-patch:
         update-types: ["minor", "patch"]
+    ignore:
+      # mcp 2.0.0 removed the low-level Server decorators the meta-router
+      # daemon (scripts/mcp/) relies on; the router pins mcp 1.x in its own
+      # venv. Allow minor/patch within 1.x (already grouped) but not the
+      # 2.0.0 major.
+      - dependency-name: "mcp"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
