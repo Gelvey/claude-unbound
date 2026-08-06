@@ -336,6 +336,10 @@ def _build_server(backends: dict[str, Backend]) -> Server:
                     f"registered tools from `{target}` (advertised as "
                     f"`{tp}__<tool>`, e.g. `{tp}__get_version`)."
                 )
+                try:
+                    await server.request_context.session.send_tool_list_changed()
+                except Exception as e:
+                    log.warning("Failed to emit tools/list_changed notification: %s", e)
             return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
 
         if name == "list_active_servers":
@@ -773,9 +777,19 @@ async def _handle_client(
         log.exception("[%s] Server.run failed", conn_id)
     finally:
         log.info("[%s] client disconnected", conn_id)
+        # Deactivate all backends for this session so their background tasks are cancelled
+        with anyio.CancelScope(shield=True):
+            for b in list(backends.values()):
+                if b._session is not None:
+                    try:
+                        if b._shutdown is not None:
+                            b._shutdown.set()
+                        await _deactivate(b.name, backends)
+                    except Exception as e:
+                        log.warning("[%s] error deactivating backend %r: %s", conn_id, b.name, e)
 
 
-async def serve_unix_socket(socket_path: str, backends: dict[str, Backend]) -> None:
+async def serve_unix_socket(socket_path: str) -> None:
     """Listen on a Unix socket and accept MCP client connections forever.
 
     Implementation note: ``anyio.create_unix_server`` was removed in
@@ -799,7 +813,14 @@ async def serve_unix_socket(socket_path: str, backends: dict[str, Backend]) -> N
     async def on_connect(
         reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
-        await _handle_client(reader, writer, backends)
+        try:
+            assert _CONFIG_PATH is not None
+            session_backends, _ = load_config(_CONFIG_PATH)
+        except Exception as e:
+            log.exception("Failed to load config for new connection: %s", e)
+            writer.close()
+            return
+        await _handle_client(reader, writer, session_backends)
 
     server = await asyncio.start_unix_server(on_connect, path=socket_path)
     # Restrict socket permissions.
@@ -852,14 +873,14 @@ def main() -> int:
     _CONFIG_PATH = Path(args.config)
     backends, _raw_cfg = load_config(_CONFIG_PATH)
     log.info(
-        "Loaded %d backends from %s: %s",
+        "Validated %d backends from %s: %s",
         len(backends),
         args.config,
         ", ".join(b.name for b in backends.values()),
     )
 
     with contextlib.suppress(KeyboardInterrupt):
-        anyio.run(serve_unix_socket, args.socket, backends)
+        anyio.run(serve_unix_socket, args.socket)
     return 0
 
 
