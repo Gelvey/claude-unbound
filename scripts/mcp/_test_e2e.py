@@ -64,19 +64,32 @@ def _send_messages(s: socket.socket, messages: list[dict]) -> None:
 
 
 def _recv_lines(s: socket.socket, want_newlines: int, settle_s: float = 1.0) -> str:
-    """Read from the socket until we have at least ``want_newlines`` lines or it times out."""
+    """Read from the socket until we have at least ``want_newlines`` lines or it goes quiet.
+
+    ``want_newlines`` is an early-exit hint, not a hard requirement: the
+    router may emit extra notifications (e.g. ``tools/list_changed`` after
+    ``use_server``) whose presence varies by code path, so we cannot know
+    the exact response count up front. After the initial settle, read with
+    a short per-recv timeout and return as soon as the socket goes quiet
+    — this bounds wait time regardless of how many messages arrive.
+    """
     time.sleep(settle_s)
     buf = b""
+    saved_timeout = s.gettimeout()
+    s.settimeout(0.5)
     try:
         while True:
-            chunk = s.recv(8192)
+            try:
+                chunk = s.recv(8192)
+            except TimeoutError:
+                break  # socket went quiet — we have everything
             if not chunk:
                 break
             buf += chunk
             if buf.count(b"\n") >= want_newlines:
                 break
-    except TimeoutError:
-        pass
+    finally:
+        s.settimeout(saved_timeout)
     return buf.decode("utf-8", errors="replace")
 
 
@@ -135,20 +148,63 @@ def _connect_and_handshake(
             s.close()
 
 
-def _call_tool(sock_path: str, tool_name: str, arguments: dict | None = None) -> str:
-    """Send initialize + notifications/initialized + tools/call, return the raw response."""
+def _call_tool(
+    sock_path: str,
+    tool_name: str,
+    arguments: dict | None = None,
+    extra_requests: list[dict] | None = None,
+) -> str:
+    """Send initialize + notifications/initialized + tools/call (+ optional extras), return the raw response.
+
+    Extras are sent after the tools/call on the same connection, so callers
+    can verify session-scoped side effects of the tool call (e.g. a
+    follow-up ``tools/list`` to confirm ``use_server`` registered tools on
+    *this* connection — the router isolates backend state per-session, so
+    a second connection would not see the activation).
+    """
+    requests = [
+        {
+            "jsonrpc": "2.0",
+            "id": 99,
+            "method": "tools/call",
+            "params": {"name": tool_name, "arguments": arguments or {}},
+        }
+    ]
+    if extra_requests:
+        requests.extend(extra_requests)
     return _connect_and_handshake(
         sock_path,
         with_initialized=True,
-        extra_requests=[
-            {
-                "jsonrpc": "2.0",
-                "id": 99,
-                "method": "tools/call",
-                "params": {"name": tool_name, "arguments": arguments or {}},
-            }
-        ],
+        extra_requests=requests,
     )
+
+
+def _parse_tools_list_names(resp: str, list_id: int = 100) -> list[str] | None:
+    """Extract tool names from a ``tools/list`` JSON-RPC response by id.
+
+    Walks newline-delimited messages in ``resp``, finds the one whose
+    ``id`` matches ``list_id``, and returns the ``name`` field of each
+    tool in ``result.tools``. Returns ``None`` if the response is missing
+    or malformed. Used by the self-test to verify that ``use_server``
+    actually registered a backend's tools on the *same* connection (the
+    router isolates backend state per-session, so the activation is
+    visible only on the connection that called ``use_server``).
+    """
+    for line in resp.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            msg = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if msg.get("id") != list_id or "result" not in msg:
+            continue
+        tools = msg["result"].get("tools") or []
+        if not isinstance(tools, list):
+            return None
+        return [t.get("name", "") for t in tools if isinstance(t, dict)]
+    return None
 
 
 def _parse_tools_call_result(resp: str, call_id: int = 99) -> dict | None:
@@ -271,10 +327,19 @@ def self_test(sock_path: str) -> None:
     prefix = f"{tool_prefix}__"
 
     def _check4() -> None:
-        activate_resp = _call_tool(sock_path, "use_server", {"name": probe_name})
-        # Parse the TextContent payload properly instead of substring
-        # matching on the raw response (which is fragile to formatting
-        # changes in the router).
+        # use_server and the follow-up tools/list MUST run on the same
+        # connection: the router isolates backend activations per-session
+        # (each client connection gets its own backends dict), so a fresh
+        # connection would not see the activation and the prefix check
+        # would always fail. Send the tools/list as an extra request on
+        # the same socket right after the tools/call.
+        activate_resp = _call_tool(
+            sock_path,
+            "use_server",
+            {"name": probe_name},
+            extra_requests=[{"jsonrpc": "2.0", "id": 100, "method": "tools/list"}],
+        )
+        # Parse the use_server result to confirm activation succeeded.
         result = _parse_tools_call_result(activate_resp)
         _check(
             result is not None and result.get("ok") is True,
@@ -282,15 +347,25 @@ def self_test(sock_path: str) -> None:
             f"  parsed result: {result}\n"
             f"  raw response: {activate_resp}",
         )
-        # A second use_server call (already active) is a no-op success
-        # — that's fine, but the tools/list below is the real check that
-        # the activated backend's tools are actually registered.
-        post_resp = _connect_and_handshake(sock_path, with_initialized=True)
-        _check(
-            prefix in post_resp,
-            f"no tools prefixed with {prefix!r} after use_server; "
-            f"supergateway for {probe_name!r} may be broken.\n{post_resp}",
-        )
+        # Verify the backend's tools are actually registered on THIS
+        # connection by parsing the tools/list response (id=100). Do NOT
+        # substring-match the whole blob: the use_server result includes a
+        # ``next_step`` hint that literally names the prefix, so a naive
+        # ``prefix in resp`` check would pass even if the supergateway
+        # registered zero tools.
+        names = _parse_tools_list_names(activate_resp, list_id=100)
+        if names is None:
+            _check(
+                False,
+                f"no tools/list (id=100) response after use_server; "
+                f"supergateway for {probe_name!r} may be broken.\n{activate_resp}",
+            )
+        else:
+            _check(
+                any(n.startswith(prefix) for n in names),
+                f"no tools prefixed with {prefix!r} in tools/list after use_server; "
+                f"supergateway for {probe_name!r} may be broken.\n  tools={names}",
+            )
 
     try:
         _retry(_check4, f"check 4 (use_server + tools/list for {probe_name!r})")
