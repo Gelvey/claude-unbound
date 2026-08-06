@@ -33,7 +33,7 @@ dependencies = [
     # low-level Server decorators (@server.list_tools/@server.call_tool) that
     # mcp 2.0.0 removed. The router runs in its own venv on mcp 1.27.2; this
     # pin keeps the test suite (which imports the router under this venv)
-    # compatible. Ignored for semver-major by .github/dependabot.yml.
+    # compatible. Migrating to mcp 2.0.0 is tracked separately.
     "mcp>=1.27.2,<2.0.0",
 ]
 
