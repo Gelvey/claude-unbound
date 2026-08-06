@@ -508,6 +508,67 @@ setup_mcp_router() {
     fi
 }
 
+# Register the mcp-router stdio entry in ~/.claude.json so Claude Code/Desktop
+# spawns the repo Python proxy (scripts/mcp/mcp_router_proxy.py) via the
+# scripts/mcp venv. Idempotent: re-running overwrites only the mcp-router key,
+# preserving every other key (Claude Desktop's own state, the graphify entry,
+# etc.). Also removes a retired ~/.local/bin/mcp-proxy-tool (a generic Rust
+# binary with no socket-retry) so existing installs switch to the Python proxy.
+register_mcp_router_in_claude_json() {
+    local claude_json="$HOME/.claude.json"
+    local socket="$HOME/.mcp-router/sockets/router.sock"
+    local venv_python="$REPO_DIR/scripts/mcp/.venv/bin/python"
+    local proxy_script="$REPO_DIR/scripts/mcp/mcp_router_proxy.py"
+    local old_proxy="$HOME/.local/bin/mcp-proxy-tool"
+
+    if ! command -v jq >/dev/null 2>&1; then
+        printf 'WARNING: jq not found; skipping mcp-router registration in %s\n' "$claude_json" >&2
+        printf '         Install jq and re-run install.sh to register the MCP Router.\n' >&2
+        return 0
+    fi
+
+    # Ensure the MCP Router venv exists so the registered command is runnable.
+    if [ ! -x "$venv_python" ] && [ -f "$REPO_DIR/scripts/mcp/pyproject.toml" ]; then
+        run uv sync --directory "$REPO_DIR/scripts/mcp" --quiet 2>/dev/null || true
+    fi
+
+    # Remove the retired Rust binary from older installs.
+    if [ -e "$old_proxy" ]; then
+        run rm -f "$old_proxy"
+        printf 'Removed retired mcp-proxy-tool binary: %s\n' "$old_proxy"
+    fi
+
+    if [ "$dry_run" -eq 1 ]; then
+        printf 'Would register mcp-router in %s (dry-run)\n' "$claude_json"
+        return 0
+    fi
+
+    # Initialize ~/.claude.json if missing or not valid JSON.
+    if [ ! -f "$claude_json" ] || ! jq empty "$claude_json" >/dev/null 2>&1; then
+        printf '{}\n' > "$claude_json"
+    fi
+
+    local comment="stdio<->Unix-socket bridge to the MCP meta-router. Runs the repo Python proxy (scripts/mcp/mcp_router_proxy.py) via the scripts/mcp venv; retries the socket connection for 60s so Claude Desktop doesn't race the router startup. Managed by install.sh."
+    local tmp
+    tmp="$(mktemp)"
+    if jq --arg cmd "$venv_python" \
+           --arg script "$proxy_script" \
+           --arg sock "$socket" \
+           --arg comment "$comment" \
+           '.mcpServers["mcp-router"] = {
+              "type": "stdio",
+              "command": $cmd,
+              "args": [$script, "-p", $sock],
+              "_comment": $comment
+            }' "$claude_json" > "$tmp"; then
+        mv "$tmp" "$claude_json"
+        printf 'Registered mcp-router in %s\n' "$claude_json"
+    else
+        rm -f "$tmp"
+        printf 'WARNING: failed to register mcp-router in %s\n' "$claude_json" >&2
+    fi
+}
+
 # Print guidance about MCP Router dependencies (non-fatal).
 print_mcp_dependency_guidance() {
     mcp_missing=""
@@ -716,6 +777,9 @@ sync_repo_extras
 
 step "Setting up MCP Router"
 setup_mcp_router
+
+step "Registering MCP Router in Claude Code"
+register_mcp_router_in_claude_json
 
 # Install the spawn-claude-tab skill to ~/.claude/skills/ so Claude Code
 # agents in any repo can spawn new orange kitty tabs.

@@ -363,7 +363,7 @@ echo
 # Run the end-to-end test against the just-started daemon to catch SDK or
 # router regressions that would otherwise silently surface as "tools fetch
 # failed" in fcc-claude. The test connects, sends initialize + tools/list
-# (the same path mcp-proxy-tool uses), and asserts all 4 control tools
+# (the same path mcp-router-proxy uses), and asserts all 4 control tools
 # come back. Failure here tears the stack down so the launcher exits
 # loudly instead of handing the user a broken MCP.
 echo "[mcp] running post-startup self-test..."

@@ -166,14 +166,42 @@ uninstall_free_claude_code() {
     fi
 }
 
-# Remove MCP Router state directory (~/.mcp-router/).
+# Remove MCP Router state directory (~/.mcp-router/), the retired
+# ~/.local/bin/mcp-proxy-tool binary, and the mcp-router entry install.sh
+# wrote into ~/.claude.json.
 remove_mcp_router_state() {
-    if [ ! -d "$MCP_ROUTER_DIR" ]; then
+    if [ -d "$MCP_ROUTER_DIR" ]; then
+        run rm -rf "$MCP_ROUTER_DIR"
+        printf 'Removed MCP Router state: %s\n' "$MCP_ROUTER_DIR"
+    else
         printf 'No MCP Router state at %s; skipping.\n' "$MCP_ROUTER_DIR"
-        return 0
     fi
-    run rm -rf "$MCP_ROUTER_DIR"
-    printf 'Removed MCP Router state: %s\n' "$MCP_ROUTER_DIR"
+
+    # Remove the retired mcp-proxy-tool binary (older installs placed a
+    # generic Rust binary at ~/.local/bin/mcp-proxy-tool with no socket-retry).
+    local old_proxy="$HOME/.local/bin/mcp-proxy-tool"
+    if [ -e "$old_proxy" ]; then
+        run rm -f "$old_proxy"
+        printf 'Removed retired mcp-proxy-tool binary: %s\n' "$old_proxy"
+    fi
+
+    # Remove the mcp-router entry install.sh registered in ~/.claude.json,
+    # preserving every other key.
+    local claude_json="$HOME/.claude.json"
+    if [ ! -f "$claude_json" ] || ! command -v jq >/dev/null 2>&1; then
+        :
+    elif [ "$dry_run" -eq 1 ]; then
+        printf 'Would remove mcp-router entry from %s (dry-run)\n' "$claude_json"
+    else
+        local tmp
+        tmp="$(mktemp)"
+        if jq 'del(.mcpServers["mcp-router"])' "$claude_json" > "$tmp" 2>/dev/null; then
+            mv "$tmp" "$claude_json"
+            printf 'Removed mcp-router entry from %s\n' "$claude_json"
+        else
+            rm -f "$tmp"
+        fi
+    fi
 }
 
 # Remove the repository clone. In dev mode, only the symlink is removed

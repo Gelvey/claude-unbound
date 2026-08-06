@@ -146,6 +146,7 @@ def test_install_sh_dry_run_produces_expected_steps() -> None:
     assert "Creating wrapper scripts" in stdout
     assert "Syncing project dependencies" in stdout
     assert "Setting up MCP Router" in stdout
+    assert "Registering MCP Router in Claude Code" in stdout
     assert "Installing Claude Code skill" in stdout
 
     # Post-install instructions
@@ -201,6 +202,34 @@ def test_install_sh_dry_run_prints_no_real_commands() -> None:
     assert "+ " in stdout, (
         f"Expected printed commands (prefixed with '+') in dry-run output, "
         f"but got:\n{stdout}"
+    )
+
+
+def test_install_sh_registers_mcp_router_in_claude_json() -> None:
+    """install.sh registers the mcp-router stdio entry in ~/.claude.json,
+    pointing at the repo Python proxy (mcp_router_proxy.py) via the
+    scripts/mcp venv, and removes the retired ~/.local/bin/mcp-proxy-tool
+    Rust binary from older installs."""
+    text = _script_text("install.sh")
+    body = _braced_body(text, "register_mcp_router_in_claude_json()")
+    main = text[text.index('parse_args "$@"') :]
+
+    # Registered command runs the repo proxy via the scripts/mcp venv python.
+    assert "scripts/mcp/.venv/bin/python" in body
+    assert "scripts/mcp/mcp_router_proxy.py" in body
+    # The entry preserves the socket arg and is keyed under mcp-router.
+    assert ".mcp-router/sockets/router.sock" in body
+    assert '"mcp-router"' in body
+    # Older installs had a Rust binary at ~/.local/bin/mcp-proxy-tool; it is
+    # removed so existing machines switch to the Python proxy.
+    assert "mcp-proxy-tool" in body
+    assert 'rm -f "$old_proxy"' in body
+    # The registration is non-fatal when jq is missing.
+    assert "command -v jq" in body
+    # Called in the main install flow under its own step.
+    assert (
+        'step "Registering MCP Router in Claude Code"\nregister_mcp_router_in_claude_json'
+        in main
     )
 
 

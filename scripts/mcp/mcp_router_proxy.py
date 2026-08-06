@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bridge Claude Code's stdio MCP transport to the FCC router Unix socket."""
+"""Bridge Claude Code's stdio MCP transport to the MCP meta-router Unix socket."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ def _connect(socket_path: str, timeout_s: float) -> socket.socket:
             time.sleep(0.25)
 
     detail = f": {last_error}" if last_error is not None else ""
-    raise SystemExit(f"mcp_proxy_tool: could not connect to {socket_path}{detail}")
+    raise SystemExit(f"mcp_router_proxy: could not connect to {socket_path}{detail}")
 
 
 def _relay(client: socket.socket) -> int:

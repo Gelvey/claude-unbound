@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import stat
@@ -212,3 +213,70 @@ def test_uninstall_sh_missing_uv_still_deletes_fcc_home(tmp_path: Path) -> None:
     assert result.returncode == 0
     assert not fcc_home.exists()
     assert "uv not found on PATH; skipping uv tool uninstall." in result.stdout
+
+
+def test_uninstall_sh_removes_mcp_router_entry_and_binary(tmp_path: Path) -> None:
+    """uninstall.sh removes the mcp-router entry from ~/.claude.json
+    (preserving every other key) and the retired ~/.local/bin/mcp-proxy-tool
+    binary, alongside the ~/.mcp-router state directory."""
+    sh = shutil.which("sh")
+    if sh is None:
+        pytest.skip("sh is not available on this platform")
+    if shutil.which("jq") is None:
+        pytest.skip("jq is not available on this platform")
+
+    home = tmp_path / "home"
+    fcc_home = home / ".fcc"
+    bin_dir = home / ".local" / "bin"
+    router_state = home / ".mcp-router"
+    fcc_home.mkdir(parents=True)
+    bin_dir.mkdir(parents=True)
+    router_state.mkdir(parents=True)
+    _write_mock_no_procs(bin_dir)
+
+    # Retired Rust binary placed by older installs.
+    old_proxy = bin_dir / "mcp-proxy-tool"
+    old_proxy.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    old_proxy.chmod(old_proxy.stat().st_mode | stat.S_IXUSR)
+
+    # ~/.claude.json with an mcp-router entry plus an unrelated key that must
+    # survive the deletion.
+    claude_json = home / ".claude.json"
+    claude_json.write_text(
+        json.dumps(
+            {
+                "numStartups": 7,
+                "mcpServers": {
+                    "mcp-router": {
+                        "type": "stdio",
+                        "command": str(bin_dir / "mcp-proxy-tool"),
+                        "args": ["-p", "/tmp/router.sock"],
+                    },
+                    "graphify": {"type": "http", "url": "http://127.0.0.1:7120/mcp"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sh, str(_repo_root() / "scripts" / "uninstall.sh")],
+        cwd=_repo_root(),
+        env={**os.environ, "HOME": str(home), "PATH": _shell_path_with_mock(bin_dir)},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    # Retired binary removed.
+    assert not old_proxy.exists()
+    # Router state removed.
+    assert not router_state.exists()
+    # mcp-router entry removed; other keys preserved.
+    data = json.loads(claude_json.read_text(encoding="utf-8"))
+    assert "mcp-router" not in data.get("mcpServers", {})
+    assert data["numStartups"] == 7
+    assert data["mcpServers"]["graphify"]["url"] == "http://127.0.0.1:7120/mcp"
+    assert "Removed mcp-router entry from" in result.stdout
+    assert "Removed retired mcp-proxy-tool binary" in result.stdout

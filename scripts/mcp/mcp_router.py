@@ -9,7 +9,7 @@ Architecture
   router connects directly to the configured URL.
 - This router is a single persistent Unix-socket daemon. It is the only
   entry point that Claude Code talks to. (Claude Code invokes it via
-  `mcp-proxy-tool -p <socket>`, which speaks JSON-RPC over the socket
+  `mcp-router-proxy -p <socket>`, which speaks JSON-RPC over the socket
   directly to this process.) One router process handles ALL client
   connections — there is no per-connection fork.
 - On startup, this router advertises ONLY control tools:
@@ -772,7 +772,7 @@ async def _handle_client(
             # ``stateless=True`` tells the MCP SDK's ``ServerSession`` to
             # not require the client to send ``initialize`` +
             # ``notifications/initialized`` before processing requests.
-            # fcc-claude (via mcp-proxy-tool) sends ``tools/list`` as the
+            # fcc-claude (via mcp-router-proxy) sends ``tools/list`` as the
             # first message with no initialization handshake, so without
             # this flag every request is rejected with "Received request
             # before initialization was complete" (-32602) and fcc-claude

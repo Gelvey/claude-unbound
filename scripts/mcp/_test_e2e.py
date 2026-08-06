@@ -10,7 +10,7 @@ Two modes:
      self-test from start_mcp.sh so any SDK or router regression fails
      the launcher loudly.
 
-The self-test exercises the same path fcc-claude uses via mcp-proxy-tool:
+The self-test exercises the same path fcc-claude uses via mcp-router-proxy:
 send ``initialize`` (the SDK now runs in stateless mode, so the client is
 not required to send ``notifications/initialized``), then ``tools/list``,
 and assert the response contains all 4 control tools. A 4th check
