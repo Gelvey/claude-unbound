@@ -29,7 +29,7 @@ dependencies = [
     "jsonschema>=4.25.0",
     "paramiko>=3.4",
     # MCP SDK: shared between the meta-router daemon and admin FastAPI.
-    "mcp>=1.27.2,<2.0.0",
+    "mcp>=2.0.0,<3.0.0",
 ]
 
 [project.scripts]
