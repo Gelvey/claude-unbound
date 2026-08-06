@@ -61,10 +61,10 @@ export function ProvidersView() {
             return (
               <article
                 key={provider.provider_id}
-                className="grid gap-2 min-h-[108px] border border-base-300 rounded-lg p-3.5 bg-base-100 hover:border-base-content/30 transition"
+                className="grid gap-2 min-h-[108px] border border-base-300 rounded-lg p-3.5 bg-base-100 hover:border-base-content/30 transition overflow-hidden"
               >
-                <div className="flex items-center justify-between gap-2">
-                  <strong className="text-sm">{providerName(provider.provider_id)}</strong>
+                <div className="flex items-center justify-between gap-2 overflow-hidden">
+                  <strong className="text-sm truncate" title={providerName(provider.provider_id)}>{providerName(provider.provider_id)}</strong>
                   <Badge kind={statusBadgeClass(status)}>{label}</Badge>
                 </div>
                 <div className="text-xs text-base-content/60 break-words">{meta}</div>

@@ -186,7 +186,7 @@ export function Badge({
   kind?: BadgeKind;
   children: ReactNode;
 }) {
-  return <span className={badgeClass[kind]}>{children}</span>;
+  return <span className={`${badgeClass[kind]} shrink-0 whitespace-nowrap`}>{children}</span>;
 }
 
 export function statusBadgeClass(status: string): BadgeKind {
