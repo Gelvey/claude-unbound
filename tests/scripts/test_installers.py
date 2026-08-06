@@ -147,6 +147,7 @@ def test_install_sh_dry_run_produces_expected_steps() -> None:
     assert "Syncing project dependencies" in stdout
     assert "Setting up MCP Router" in stdout
     assert "Registering MCP Router in Claude Code" in stdout
+    assert "Refreshing Claude Desktop managed settings" in stdout
     assert "Installing Claude Code skill" in stdout
 
     # Post-install instructions
@@ -229,6 +230,34 @@ def test_install_sh_registers_mcp_router_in_claude_json() -> None:
     # Called in the main install flow under its own step.
     assert (
         'step "Registering MCP Router in Claude Code"\nregister_mcp_router_in_claude_json'
+        in main
+    )
+
+
+def test_install_sh_refreshes_desktop_managed_settings_when_wired() -> None:
+    """install.sh re-mirrors ~/.claude.json mcpServers into the desktop's
+    managed-settings.json after registering the mcp-router entry, so an
+    already-wired 3P desktop picks up the new command. It only acts when
+    the gateway is already wired (so non-desktop machines are never
+    prompted for sudo) and never writes during --dry-run."""
+    text = _script_text("install.sh")
+    body = _braced_body(text, "refresh_claude_desktop_managed_settings()")
+    main = text[text.index('parse_args "$@"') :]
+
+    # Delegates to setup-gateway.sh, gated on a variant managed-settings.json
+    # existing (so a non-wired / non-desktop machine is skipped without a
+    # sudo prompt) — NOT on --check, which fails when stale (exactly when a
+    # refresh is needed).
+    assert "setup-gateway.sh" in body
+    assert "/etc/claude-desktop/managed-settings.json" in body
+    assert "Library/Application Support/Claude/managed-settings.json" in body
+    # Dry-run must not trigger the sudo write.
+    assert 'dry_run" -eq 1' in body
+    # Non-fatal: a failed refresh warns and returns, never aborts install.
+    assert "could not refresh Claude Desktop managed settings" in body
+    # Called in the main install flow under its own step, after registration.
+    assert (
+        'step "Refreshing Claude Desktop managed settings"\nrefresh_claude_desktop_managed_settings'
         in main
     )
 

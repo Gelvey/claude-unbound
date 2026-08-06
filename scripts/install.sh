@@ -586,6 +586,50 @@ print_mcp_dependency_guidance() {
     fi
 }
 
+# The 3P Claude Desktop reads MCP servers from managed-settings.json
+# (mirrored by setup-gateway.sh), not directly from ~/.claude.json. So when
+# register_mcp_router_in_claude_json updates the mcp-router entry, the desktop
+# keeps spawning the OLD command until managed-settings is re-mirrored. The
+# launcher's `setup-gateway.sh --check` short-circuits when the gateway URL is
+# already correct, so a stale managedMcpServers would never refresh on its own.
+#
+# This re-mirrors ~/.claude.json mcpServers into managed-settings IF the desktop
+# gateway is already wired (so non-desktop and non-wired machines are untouched
+# and never prompted for sudo). setup-gateway.sh rewrites the whole managed
+# file (gateway URL, models, sandbox, perms, managedMcpServers) — all idempotent
+# and derived from ~/.fcc/.env + ~/.claude.json, so this also keeps the model
+# list fresh. It elevates via sudo/pkexec (the file must stay root-owned); if
+# elevation fails the install is not aborted — the user can re-run it manually.
+refresh_claude_desktop_managed_settings() {
+    local gateway_sh="$REPO_DIR/scripts/claude-desktop/setup-gateway.sh"
+    [ -f "$gateway_sh" ] || return 0
+
+    # Only act when the desktop gateway is already in use — i.e. a variant
+    # managed-settings.json exists. We must NOT use `setup-gateway.sh --check`
+    # here: --check validates freshness and FAILS when the file is stale, which
+    # is exactly when we want to refresh. Existence of the managed file means
+    # the user has wired the desktop (and used sudo before), so prompting for
+    # sudo to refresh is expected; absent files mean a non-desktop or unwired
+    # machine, where we skip rather than prompt.
+    if [ ! -f "/Library/Application Support/Claude/managed-settings.json" ] \
+            && [ ! -f "/etc/claude-desktop/managed-settings.json" ] \
+            && [ ! -f "/etc/claude/managed-settings.json" ]; then
+        printf 'Claude Desktop gateway not wired; skipping managed-settings refresh.\n'
+        return 0
+    fi
+
+    if [ "$dry_run" -eq 1 ]; then
+        printf 'Would refresh Claude Desktop managed settings via %s (dry-run)\n' "$gateway_sh"
+        return 0
+    fi
+
+    printf 'Refreshing Claude Desktop managed settings (re-mirrors mcpServers)...\n'
+    if ! bash "$gateway_sh"; then
+        printf 'WARNING: could not refresh Claude Desktop managed settings.\n' >&2
+        printf '         Re-run: sudo bash %s\n' "$gateway_sh" >&2
+    fi
+}
+
 # Offer to install Claude Desktop and wire it into the proxy so inference
 # routes through the gateway with no Anthropic login (the desktop equivalent
 # of the CLI's env-var injection).
@@ -780,6 +824,9 @@ setup_mcp_router
 
 step "Registering MCP Router in Claude Code"
 register_mcp_router_in_claude_json
+
+step "Refreshing Claude Desktop managed settings"
+refresh_claude_desktop_managed_settings
 
 # Install the spawn-claude-tab skill to ~/.claude/skills/ so Claude Code
 # agents in any repo can spawn new orange kitty tabs.
