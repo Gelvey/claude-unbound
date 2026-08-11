@@ -21,8 +21,8 @@ dependencies = [
     "tiktoken>=0.13.0",
     "python-telegram-bot>=22.8",
     "discord.py>=2.7.1",
-    "pydantic-settings>=2.14.2",
-    "openai>=2.52.0",
+    "pydantic-settings>=2.15.0",
+    "openai>=2.53.0",
     "google-auth[requests]>=2.56.2",
     "loguru>=0.7.0",
     "aiohttp>=3.14.3",
@@ -87,8 +87,8 @@ dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
-    "ty>=0.0.65",
-    "ruff>=0.16.1",
+    "ty>=0.0.69",
+    "ruff>=0.16.2",
     "pytest-xdist>=3.8.0",
     # Starlette's TestClient prefers httpx2 over httpx; without it the
     # fastapi.testclient import emits a StarletteDeprecationWarning. Kept
