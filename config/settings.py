@@ -350,6 +350,15 @@ class Settings(BaseSettings):
     model_sonnet: str | None = Field(default=None, validation_alias="MODEL_SONNET")
     model_haiku: str | None = Field(default=None, validation_alias="MODEL_HAIKU")
 
+    # Comma-separated provider/model refs (e.g. "cloudflare_ai/deepseek-v4-pro-0813")
+    # whose upstream models expose a ~1M-token context window. These refs get a
+    # "[1m]" suffix in /v1/models so Claude Code reports a 1M context window instead
+    # of its 200k fallback for unknown models. Empty = no 1M advertising.
+    context_window_1m_models: Annotated[frozenset[str], NoDecode] = Field(
+        default_factory=frozenset,
+        validation_alias="CONTEXT_WINDOW_1M_MODELS",
+    )
+
     # ==================== Per-Provider Proxy ====================
     nvidia_nim_proxy: str = Field(default="", validation_alias="NVIDIA_NIM_PROXY")
     open_router_proxy: str = Field(default="", validation_alias="OPENROUTER_PROXY")
@@ -768,6 +777,23 @@ class Settings(BaseSettings):
         raise ValueError(
             "OPENROUTER_FREE_MODEL_IDS must be a comma-separated string "
             "or an iterable of model ids"
+        )
+
+    @field_validator("context_window_1m_models", mode="before")
+    @classmethod
+    def parse_context_window_1m_models(cls, v: Any) -> Any:
+        """Parse a comma-separated list of provider/model refs into a frozenset."""
+        if v is None or v == "":
+            return frozenset()
+        if isinstance(v, frozenset):
+            return v
+        if isinstance(v, str):
+            return frozenset(part.strip() for part in v.split(",") if part.strip())
+        if isinstance(v, (list, tuple, set)):
+            return frozenset(str(item).strip() for item in v if str(item).strip())
+        raise ValueError(
+            "CONTEXT_WINDOW_1M_MODELS must be a comma-separated string "
+            "or an iterable of provider/model refs"
         )
 
     @field_validator("token_count_multiplier")

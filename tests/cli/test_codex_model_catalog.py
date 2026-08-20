@@ -140,6 +140,21 @@ def test_codex_catalog_accepts_future_direct_provider_slugs() -> None:
     ]
 
 
+def test_codex_catalog_strips_1m_marker_from_slugs() -> None:
+    catalog = build_codex_model_catalog(
+        _models_payload(
+            "anthropic/cloudflare_ai/deepseek-v4-pro-0813[1m]",
+            "claude-3-freecc-no-thinking/cloudflare_ai/deepseek-v4-pro-0813[1m]",
+            "anthropic/cloudflare_ai/other-model",
+        )
+    )
+
+    assert _slugs(catalog) == [
+        "cloudflare_ai/deepseek-v4-pro-0813",
+        "cloudflare_ai/other-model",
+    ]
+
+
 def test_generated_catalog_schema_is_accepted_by_installed_codex(
     tmp_path: Path,
 ) -> None:

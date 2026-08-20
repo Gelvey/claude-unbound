@@ -9,7 +9,7 @@ from loguru import logger
 from config.provider_ids import SUPPORTED_PROVIDER_IDS
 from config.settings import Settings
 
-from .gateway_model_ids import decode_gateway_model_id
+from .gateway_model_ids import decode_gateway_model_id, strip_context_window_marker
 from .models.anthropic import MessagesRequest, TokenCountRequest
 
 
@@ -103,7 +103,7 @@ class ModelRouter:
             return None, None, None
         if not provider_model:
             return None, None, None
-        return provider_id, provider_model, None
+        return provider_id, strip_context_window_marker(provider_model), None
 
     def resolve_messages_request(
         self, request: MessagesRequest
