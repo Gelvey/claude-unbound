@@ -167,3 +167,32 @@ def test_models_list_works_without_provider_registry():
         "claude-3-freecc-no-thinking/open_router/anthropic/claude-opus",
     ]
     assert "claude-sonnet-4-20250514" in ids
+
+
+def test_models_list_suffixes_1m_models_with_marker():
+    app = create_app(lifespan_enabled=False)
+    settings = _settings(
+        model="cloudflare_ai/deepseek-v4-pro-0813",
+        model_opus=None,
+        model_haiku=None,
+    )
+    settings.context_window_1m_models = frozenset(
+        {"cloudflare_ai/deepseek-v4-pro-0813"}
+    )
+    registry = ProviderRegistry()
+    registry.cache_model_ids("cloudflare_ai", {"deepseek-v4-pro-0813", "other-model"})
+    app.state.provider_registry = registry
+    app.dependency_overrides[get_settings] = lambda: settings
+
+    try:
+        response = TestClient(app).get("/v1/models")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    ids = [item["id"] for item in response.json()["data"]]
+    assert "anthropic/cloudflare_ai/deepseek-v4-pro-0813[1m]" in ids
+    assert "claude-3-freecc-no-thinking/cloudflare_ai/deepseek-v4-pro-0813[1m]" in ids
+    assert "anthropic/cloudflare_ai/deepseek-v4-pro-0813" not in ids
+    assert "anthropic/cloudflare_ai/other-model" in ids
+    assert "anthropic/cloudflare_ai/other-model[1m]" not in ids

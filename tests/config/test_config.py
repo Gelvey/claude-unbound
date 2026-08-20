@@ -173,6 +173,28 @@ class TestSettings:
         assert isinstance(settings.model, str)
         assert len(settings.model) > 0
 
+    def test_context_window_1m_models_from_env(self, monkeypatch):
+        """CONTEXT_WINDOW_1M_MODELS parses a comma list into a stripped frozenset."""
+        from config.settings import Settings
+
+        monkeypatch.setitem(Settings.model_config, "env_file", ())
+        monkeypatch.setenv(
+            "CONTEXT_WINDOW_1M_MODELS",
+            " cloudflare_ai/deepseek-v4-pro-0813,open_router/qwen/qwen3-coder ",
+        )
+        settings = Settings()
+        assert settings.context_window_1m_models == frozenset(
+            {"cloudflare_ai/deepseek-v4-pro-0813", "open_router/qwen/qwen3-coder"}
+        )
+
+    def test_context_window_1m_models_defaults_empty(self, monkeypatch):
+        """CONTEXT_WINDOW_1M_MODELS defaults to an empty frozenset."""
+        from config.settings import Settings
+
+        monkeypatch.delenv("CONTEXT_WINDOW_1M_MODELS", raising=False)
+        monkeypatch.setitem(Settings.model_config, "env_file", ())
+        assert Settings().context_window_1m_models == frozenset()
+
     def test_base_url_constant(self):
         """Test NVIDIA_NIM_DEFAULT_BASE is a constant."""
         from providers.nvidia_nim import NVIDIA_NIM_DEFAULT_BASE

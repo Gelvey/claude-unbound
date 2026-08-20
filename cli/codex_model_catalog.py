@@ -12,6 +12,7 @@ from typing import Any
 from api.gateway_model_ids import (
     GATEWAY_MODEL_ID_PREFIX,
     NO_THINKING_GATEWAY_MODEL_ID_PREFIX,
+    strip_context_window_marker,
 )
 from config.provider_ids import SUPPORTED_PROVIDER_IDS
 
@@ -95,6 +96,9 @@ def _catalog_candidates(
         model_id = _string_value(item.get("id"))
         if model_id is None:
             continue
+        # The "[1m]" suffix is a Claude-Code-only context-window hint; Codex has
+        # its own per-model context_window field and must not see the marker.
+        model_id = strip_context_window_marker(model_id)
         candidate = _candidate_from_model_id(
             model_id,
             display_name=_string_value(item.get("display_name")) or model_id,

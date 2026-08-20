@@ -56,6 +56,7 @@ def build_models_list_response(
     """Return configured, cached, and compatibility model ids."""
     models: list[ModelResponse] = []
     seen: set[str] = set()
+    context_window_1m_refs = settings.context_window_1m_models
 
     for ref in settings.configured_chat_model_refs():
         supports_thinking = None
@@ -68,6 +69,7 @@ def build_models_list_response(
             seen,
             ref.model_ref,
             supports_thinking=supports_thinking,
+            context_window_1m=ref.model_ref in context_window_1m_refs,
         )
 
     if provider_registry is not None:
@@ -77,6 +79,7 @@ def build_models_list_response(
                 seen,
                 model_info.model_id,
                 supports_thinking=model_info.supports_thinking,
+                context_window_1m=model_info.model_id in context_window_1m_refs,
             )
 
     for model in SUPPORTED_CLAUDE_MODELS:
@@ -113,13 +116,16 @@ def _append_provider_model_variants(
     provider_model_ref: str,
     *,
     supports_thinking: bool | None = None,
+    context_window_1m: bool = False,
 ) -> None:
     if supports_thinking is not False:
         _append_unique_model(
             models,
             seen,
             _discovered_model_response(
-                gateway_model_id(provider_model_ref),
+                gateway_model_id(
+                    provider_model_ref, context_window_1m=context_window_1m
+                ),
                 display_name=provider_model_ref,
             ),
         )
@@ -127,7 +133,9 @@ def _append_provider_model_variants(
         models,
         seen,
         _discovered_model_response(
-            no_thinking_gateway_model_id(provider_model_ref),
+            no_thinking_gateway_model_id(
+                provider_model_ref, context_window_1m=context_window_1m
+            ),
             display_name=f"{provider_model_ref} (no thinking)",
         ),
     )

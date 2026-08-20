@@ -802,6 +802,21 @@ FIELDS: tuple[ConfigFieldSpec, ...] = (
         description="Optional provider/model route for Haiku requests.",
     ),
     ConfigFieldSpec(
+        "CONTEXT_WINDOW_1M_MODELS",
+        "1M-Context Models",
+        "models",
+        "textarea",
+        settings_attr="context_window_1m_models",
+        default="",
+        description=(
+            "Comma-separated provider/model refs whose upstream models expose a "
+            "~1M-token context window. These refs are advertised in /v1/models "
+            "with a '[1m]' id suffix so Claude Code shows a 1M context window "
+            "instead of its 200k fallback for unknown models. Example: "
+            "'cloudflare_ai/deepseek-v4-pro-0813'."
+        ),
+    ),
+    ConfigFieldSpec(
         "ENABLE_MODEL_THINKING",
         "Enable Thinking",
         "thinking",

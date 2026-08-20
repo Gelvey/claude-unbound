@@ -167,6 +167,48 @@ def test_model_router_routes_no_thinking_gateway_model_directly(settings):
     assert routed.resolved.thinking_enabled is False
 
 
+def test_model_router_strips_1m_marker_from_gateway_model(settings):
+    routed = ModelRouter(settings).resolve_messages_request(
+        MessagesRequest(
+            model="anthropic/cloudflare_ai/deepseek-v4-pro-0813[1m]",
+            max_tokens=100,
+            messages=[Message(role="user", content="hello")],
+        )
+    )
+
+    assert routed.request.model == "deepseek-v4-pro-0813"
+    assert routed.resolved.provider_id == "cloudflare_ai"
+    assert routed.resolved.provider_model == "deepseek-v4-pro-0813"
+
+
+def test_model_router_strips_1m_marker_from_no_thinking_gateway_model(settings):
+    routed = ModelRouter(settings).resolve_messages_request(
+        MessagesRequest(
+            model="claude-3-freecc-no-thinking/cloudflare_ai/deepseek-v4-pro-0813[1m]",
+            max_tokens=100,
+            messages=[Message(role="user", content="hello")],
+        )
+    )
+
+    assert routed.request.model == "deepseek-v4-pro-0813"
+    assert routed.resolved.provider_model == "deepseek-v4-pro-0813"
+    assert routed.resolved.thinking_enabled is False
+
+
+def test_model_router_strips_1m_marker_from_direct_provider_model(settings):
+    routed = ModelRouter(settings).resolve_messages_request(
+        MessagesRequest(
+            model="cloudflare_ai/deepseek-v4-pro-0813[1m]",
+            max_tokens=100,
+            messages=[Message(role="user", content="hello")],
+        )
+    )
+
+    assert routed.request.model == "deepseek-v4-pro-0813"
+    assert routed.resolved.provider_id == "cloudflare_ai"
+    assert routed.resolved.provider_model == "deepseek-v4-pro-0813"
+
+
 def test_model_router_direct_prefixed_model_uses_provider_model_for_thinking(settings):
     settings.enable_model_thinking = False
     settings.enable_opus_thinking = True
