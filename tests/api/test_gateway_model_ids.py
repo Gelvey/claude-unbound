@@ -57,3 +57,17 @@ def test_decode_gateway_model_id_strips_1m_marker_no_thinking():
     assert decoded is not None
     assert decoded.provider_model == "deepseek-v4-pro-0813"
     assert decoded.force_thinking_enabled is False
+
+
+def test_gateway_model_id_handles_nested_slashes_in_provider_model():
+    ref = "cloudflare_ai/@cf/deepseek-ai/deepseek-v4-pro-0813"
+    model_id = gateway_model_id(ref, context_window_1m=True)
+    assert model_id == (
+        "anthropic/cloudflare_ai/@cf/deepseek-ai/deepseek-v4-pro-0813[1m]"
+    )
+
+    decoded = decode_gateway_model_id(model_id)
+    assert decoded is not None
+    assert decoded.provider_id == "cloudflare_ai"
+    assert decoded.provider_model == "@cf/deepseek-ai/deepseek-v4-pro-0813"
+    assert decoded.force_thinking_enabled is None

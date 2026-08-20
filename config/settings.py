@@ -350,7 +350,7 @@ class Settings(BaseSettings):
     model_sonnet: str | None = Field(default=None, validation_alias="MODEL_SONNET")
     model_haiku: str | None = Field(default=None, validation_alias="MODEL_HAIKU")
 
-    # Comma-separated provider/model refs (e.g. "cloudflare_ai/deepseek-v4-pro-0813")
+    # Comma-separated provider/model refs (e.g. "cloudflare_ai/@cf/deepseek-ai/deepseek-v4-pro-0813")
     # whose upstream models expose a ~1M-token context window. These refs get a
     # "[1m]" suffix in /v1/models so Claude Code reports a 1M context window instead
     # of its 200k fallback for unknown models. Empty = no 1M advertising.

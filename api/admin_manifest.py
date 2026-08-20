@@ -813,7 +813,7 @@ FIELDS: tuple[ConfigFieldSpec, ...] = (
             "~1M-token context window. These refs are advertised in /v1/models "
             "with a '[1m]' id suffix so Claude Code shows a 1M context window "
             "instead of its 200k fallback for unknown models. Example: "
-            "'cloudflare_ai/deepseek-v4-pro-0813'."
+            "'cloudflare_ai/@cf/deepseek-ai/deepseek-v4-pro-0813'."
         ),
     ),
     ConfigFieldSpec(
