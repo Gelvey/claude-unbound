@@ -310,6 +310,21 @@ def test_admin_config_masks_secrets_and_exposes_manifest(monkeypatch, tmp_path):
     assert auth_field["source"] == "template"
 
 
+def test_admin_config_exposes_1m_context_window_field(monkeypatch, tmp_path):
+    _set_home(monkeypatch, tmp_path)
+    _clear_process_config(monkeypatch)
+    app = create_app(lifespan_enabled=False)
+
+    response = _local_client(app).get("/admin/api/config")
+
+    assert response.status_code == 200
+    fields = {field["key"]: field for field in response.json()["fields"]}
+    assert "CONTEXT_WINDOW_1M_MODELS" in fields
+    field = fields["CONTEXT_WINDOW_1M_MODELS"]
+    assert field["type"] == "textarea"
+    assert field["section"] == "models"
+
+
 def test_admin_config_preserves_managed_env_source_contract(monkeypatch, tmp_path):
     _set_home(monkeypatch, tmp_path)
     _clear_process_config(monkeypatch)
@@ -375,6 +390,26 @@ def test_admin_apply_writes_complete_managed_env_and_masks_preview(
         "admin_url": None,
         "fields": [],
     }
+
+
+def test_admin_apply_writes_1m_context_window_models(monkeypatch, tmp_path):
+    _set_home(monkeypatch, tmp_path)
+    _clear_process_config(monkeypatch)
+    app = create_app(lifespan_enabled=False)
+
+    response = _local_client(app).post(
+        "/admin/api/config/apply",
+        json={
+            "values": {"CONTEXT_WINDOW_1M_MODELS": "cloudflare_ai/deepseek-v4-pro-0813"}
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["applied"] is True
+    env_file = tmp_path / ".fcc" / ".env"
+    text = env_file.read_text(encoding="utf-8")
+    assert "CONTEXT_WINDOW_1M_MODELS=cloudflare_ai/deepseek-v4-pro-0813" in text
 
 
 def test_admin_apply_writes_fireworks_key_and_masks_preview(monkeypatch, tmp_path):
