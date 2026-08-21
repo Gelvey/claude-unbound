@@ -211,17 +211,23 @@ if [ "$_preflight_mode" = "desktop" ] && command -v claude-desktop-unofficial >/
     echo "  ║        Claude Desktop — Diagnostics Preflight            ║"
     echo "  ╚══════════════════════════════════════════════════════════╝"
     echo ""
-    claude-desktop-unofficial --doctor 2>&1 | sed 's/^/  /'
+    _doctor_output="$(claude-desktop-unofficial --doctor 2>&1)"
+    echo "$_doctor_output" | sed 's/^/  /'
     echo ""
-    printf "  Launch Claude Desktop anyway? [Y/n] "
-    read -r _doc_reply
-    echo ""
-    case "$_doc_reply" in
-        n|N)
-            echo "cli" > "$MODE_FILE"
-            echo "  [fcc] Switching to CLI mode per your choice."
-            ;;
-    esac
+
+    if echo "$_doctor_output" | grep -q "All checks passed\."; then
+        echo "  [fcc] All checks passed. Proceeding with Desktop launch..."
+    else
+        printf "  Launch Claude Desktop anyway? [Y/n] "
+        read -r _doc_reply
+        echo ""
+        case "$_doc_reply" in
+            n|N)
+                echo "cli" > "$MODE_FILE"
+                echo "  [fcc] Switching to CLI mode per your choice."
+                ;;
+        esac
+    fi
 fi
 
 echo ""
